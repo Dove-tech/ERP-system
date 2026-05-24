@@ -1,0 +1,152 @@
+{
+  "model": "qwen-max",
+  "mode": "replay",
+  "summaries": [
+    {
+      "dataset": "human_feedback_intent",
+      "mode": "replay",
+      "passed": 6,
+      "total": 6,
+      "accuracy": 1.0,
+      "results": [
+        {
+          "id": "intent_confirm_001",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"confirm\",\"confidence\":0.99,\"reason\":\"用户明确要求立即执行\"}",
+            "parsed": {
+              "intent": "confirm",
+              "confidence": 0.99,
+              "reason": "用户明确要求立即执行"
+            },
+            "expected": "confirm"
+          }
+        },
+        {
+          "id": "intent_confirm_002",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"confirm\",\"confidence\":0.92,\"reason\":\"用户明确同意继续调用\"}",
+            "parsed": {
+              "intent": "confirm",
+              "confidence": 0.92,
+              "reason": "用户明确同意继续调用"
+            },
+            "expected": "confirm"
+          }
+        },
+        {
+          "id": "intent_abort_001",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"abort\",\"confidence\":0.98,\"reason\":\"用户明确要求不执行\"}",
+            "parsed": {
+              "intent": "abort",
+              "confidence": 0.98,
+              "reason": "用户明确要求不执行"
+            },
+            "expected": "abort"
+          }
+        },
+        {
+          "id": "intent_abort_002",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"abort\",\"confidence\":0.96,\"reason\":\"用户要求取消任务\"}",
+            "parsed": {
+              "intent": "abort",
+              "confidence": 0.96,
+              "reason": "用户要求取消任务"
+            },
+            "expected": "abort"
+          }
+        },
+        {
+          "id": "intent_unclear_001",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"unclear\",\"confidence\":0.91,\"reason\":\"用户在提问，没有确认执行\"}",
+            "parsed": {
+              "intent": "unclear",
+              "confidence": 0.91,
+              "reason": "用户在提问，没有确认执行"
+            },
+            "expected": "unclear"
+          }
+        },
+        {
+          "id": "intent_unclear_002",
+          "passed": true,
+          "detail": {
+            "output": "{\"intent\":\"unclear\",\"confidence\":0.9,\"reason\":\"用户要求修改参数，不是确认执行\"}",
+            "parsed": {
+              "intent": "unclear",
+              "confidence": 0.9,
+              "reason": "用户要求修改参数，不是确认执行"
+            },
+            "expected": "unclear"
+          }
+        }
+      ]
+    },
+    {
+      "dataset": "tool_selection",
+      "mode": "replay",
+      "passed": 3,
+      "total": 3,
+      "accuracy": 1.0,
+      "results": [
+        {
+          "id": "tool_select_001",
+          "passed": true,
+          "detail": {
+            "output": "{\"action\":\"tool1\",\"reason\":\"用户需要根据产品名称查询产品\"}",
+            "actual": "tool1",
+            "expected": "tool1"
+          }
+        },
+        {
+          "id": "tool_select_002",
+          "passed": true,
+          "detail": {
+            "output": "Action: tool2",
+            "actual": "tool2",
+            "expected": "tool2"
+          }
+        },
+        {
+          "id": "tool_select_003",
+          "passed": true,
+          "detail": {
+            "output": "{\"action\":\"None\",\"reason\":\"没有候选工具可以写诗\"}",
+            "actual": "None",
+            "expected": "None"
+          }
+        }
+      ]
+    },
+    {
+      "dataset": "tool_summary",
+      "mode": "replay",
+      "passed": 2,
+      "total": 2,
+      "accuracy": 1.0,
+      "results": [
+        {
+          "id": "summary_001",
+          "passed": true,
+          "detail": {
+            "skipped": "tool_summary has no replay model_output; use --mode online for answer checks"
+          }
+        },
+        {
+          "id": "summary_002",
+          "passed": true,
+          "detail": {
+            "skipped": "tool_summary has no replay model_output; use --mode online for answer checks"
+          }
+        }
+      ]
+    }
+  ]
+}

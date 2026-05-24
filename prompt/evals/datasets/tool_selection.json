@@ -1,0 +1,37 @@
+{
+  "name": "tool_selection",
+  "description": "Tool selection prompt/parser smoke cases.",
+  "source_note": "Seed cases derived from the Copilot API-tool selection scenario. Extend this file with manually transcribed cases from the qwen-max PDF when available.",
+  "cases": [
+    {
+      "id": "tool_select_001",
+      "query": "查询名称为苹果的产品信息",
+      "tools": [
+        {"name_for_model": "tool1", "name_for_human": "根据产品名称查询产品信息", "description": "根据产品名称获取产品基本信息、库存和价格"},
+        {"name_for_model": "tool2", "name_for_human": "根据订单ID查询订单信息", "description": "根据订单ID获取订单详情"}
+      ],
+      "expected": {"action": "tool1"},
+      "model_output": "{\"action\":\"tool1\",\"reason\":\"用户需要根据产品名称查询产品\"}"
+    },
+    {
+      "id": "tool_select_002",
+      "query": "查询订单ID为 1001 的订单信息",
+      "tools": [
+        {"name_for_model": "tool1", "name_for_human": "根据产品名称查询产品信息", "description": "根据产品名称获取产品基本信息、库存和价格"},
+        {"name_for_model": "tool2", "name_for_human": "根据订单ID查询订单信息", "description": "根据订单ID获取订单详情"}
+      ],
+      "expected": {"action": "tool2"},
+      "model_output": "Action: tool2"
+    },
+    {
+      "id": "tool_select_003",
+      "query": "写一首关于春天的诗",
+      "tools": [
+        {"name_for_model": "tool1", "name_for_human": "根据产品名称查询产品信息", "description": "根据产品名称获取产品基本信息、库存和价格"},
+        {"name_for_model": "tool2", "name_for_human": "根据订单ID查询订单信息", "description": "根据订单ID获取订单详情"}
+      ],
+      "expected": {"action": "None"},
+      "model_output": "{\"action\":\"None\",\"reason\":\"没有候选工具可以写诗\"}"
+    }
+  ]
+}

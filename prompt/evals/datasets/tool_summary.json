@@ -1,0 +1,41 @@
+{
+  "name": "tool_summary",
+  "description": "Tool summary prompt rendering and optional online answer checks.",
+  "cases": [
+    {
+      "id": "summary_001",
+      "query": "查询苹果产品的库存",
+      "apis": [
+        {
+          "tool": "根据产品名称查询产品信息",
+          "task_description": "查询苹果产品信息",
+          "result": "{\"productId\":1,\"name\":\"苹果\",\"quantityInStock\":100,\"price\":10}"
+        }
+      ],
+      "expected": {
+        "prompt_contains": ["查询苹果产品的库存", "quantityInStock", "100"],
+        "answer_keywords": ["苹果", "100"]
+      }
+    },
+    {
+      "id": "summary_002",
+      "query": "查询订单 1001 和对应产品信息",
+      "apis": [
+        {
+          "tool": "根据订单ID查询订单信息",
+          "task_description": "查询订单1001的信息",
+          "result": "{\"orderId\":1001,\"productId\":3,\"quantity\":2}"
+        },
+        {
+          "tool": "根据产品ID查询产品信息",
+          "task_description": "查询产品3的信息",
+          "result": "{\"productId\":3,\"name\":\"梨子\",\"quantityInStock\":50}"
+        }
+      ],
+      "expected": {
+        "prompt_contains": ["订单 1001", "productId", "梨子"],
+        "answer_keywords": ["1001", "梨子"]
+      }
+    }
+  ]
+}

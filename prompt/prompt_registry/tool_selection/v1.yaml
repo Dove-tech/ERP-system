@@ -1,0 +1,25 @@
+id: tool_selection
+version: v1
+output_parser: tool_action
+template: |
+  You are an API tool selector.
+
+  Task:
+  Select the single best API tool for the user subtask.
+
+  Candidate tools:
+  {{ tool_descs }}
+
+  Allowed tool actions:
+  {{ tool_names }}
+
+  Rules:
+  - Choose only one action from the allowed tool actions.
+  - If no candidate can satisfy the task, set action to "None".
+  - Output JSON only. Do not output chain-of-thought or explanations.
+
+  User subtask:
+  {{ query }}
+
+  Output schema:
+  {"action": "toolX", "reason": "short Chinese reason"}

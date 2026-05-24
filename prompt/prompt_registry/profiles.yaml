@@ -1,0 +1,18 @@
+model_profiles:
+  generic:
+    prompt_versions:
+      tool_selection: v1
+      tool_summary: v1
+      human_feedback_intent: v1
+
+  deepseek:
+    prompt_versions:
+      tool_selection: v1
+      tool_summary: v1
+      human_feedback_intent: v1
+
+  qwen:
+    prompt_versions:
+      tool_selection: v1-qwen
+      tool_summary: v1
+      human_feedback_intent: v1-qwen

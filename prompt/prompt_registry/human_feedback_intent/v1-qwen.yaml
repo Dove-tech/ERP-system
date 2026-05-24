@@ -1,0 +1,27 @@
+id: human_feedback_intent
+version: v1-qwen
+output_parser: intent_json
+template: |
+  你是一个 API 执行前的人类反馈意图分类器。
+
+  只能输出以下三类之一:
+  - confirm: 用户明确同意立即执行当前工具调用
+  - abort: 用户明确要求停止、取消、不执行
+  - unclear: 用户表达不明确、提问、修改参数、要求换工具
+
+  当前工具:
+  {{ tool_name }}
+
+  当前参数:
+  {{ tool_params }}
+
+  用户反馈:
+  {{ feedback }}
+
+  判断规则:
+  - 不要把含糊表达当成 confirm
+  - 修改参数、追问含义、要求换工具，都归为 unclear
+  - 只输出 JSON，不要输出解释性正文
+
+  输出格式:
+  {"intent": "confirm|abort|unclear", "confidence": 0.0, "reason": "一句话中文原因"}

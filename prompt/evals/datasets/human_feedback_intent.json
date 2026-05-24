@@ -1,0 +1,55 @@
+{
+  "name": "human_feedback_intent",
+  "description": "Human feedback intent cases based on the HITL confirmation flow.",
+  "source_note": "The PDF at C:\\Users\\Yi Jiang\\Desktop\\AI\\大模型课程\\2020期L3阶段资料\\33- Copliot实战项目专题课（二）-26.3.20-云帆\\测试用例(qwen-max-0919测试通过).pdf was checked, but local OCR/text extraction was not available. These cases are structured seed cases aligned with the same qwen-max validation purpose and can be extended by manually transcribing the PDF.",
+  "cases": [
+    {
+      "id": "intent_confirm_001",
+      "feedback": "立即执行",
+      "tool_name": "查询产品信息",
+      "tool_params": {"name": "苹果"},
+      "expected": {"intent": "confirm"},
+      "model_output": "{\"intent\":\"confirm\",\"confidence\":0.99,\"reason\":\"用户明确要求立即执行\"}"
+    },
+    {
+      "id": "intent_confirm_002",
+      "feedback": "可以，继续调用这个接口",
+      "tool_name": "查询订单信息",
+      "tool_params": {"orderId": 1},
+      "expected": {"intent": "confirm"},
+      "model_output": "{\"intent\":\"confirm\",\"confidence\":0.92,\"reason\":\"用户明确同意继续调用\"}"
+    },
+    {
+      "id": "intent_abort_001",
+      "feedback": "不执行，先停一下",
+      "tool_name": "删除产品",
+      "tool_params": {"productId": 12},
+      "expected": {"intent": "abort"},
+      "model_output": "{\"intent\":\"abort\",\"confidence\":0.98,\"reason\":\"用户明确要求不执行\"}"
+    },
+    {
+      "id": "intent_abort_002",
+      "feedback": "取消本次任务",
+      "tool_name": "创建订单",
+      "tool_params": {"productId": 3, "quantity": 2},
+      "expected": {"intent": "abort"},
+      "model_output": "{\"intent\":\"abort\",\"confidence\":0.96,\"reason\":\"用户要求取消任务\"}"
+    },
+    {
+      "id": "intent_unclear_001",
+      "feedback": "这个参数 productId 是什么意思？",
+      "tool_name": "查询产品信息",
+      "tool_params": {"productId": 3},
+      "expected": {"intent": "unclear"},
+      "model_output": "{\"intent\":\"unclear\",\"confidence\":0.91,\"reason\":\"用户在提问，没有确认执行\"}"
+    },
+    {
+      "id": "intent_unclear_002",
+      "feedback": "把数量改成 10 再看看",
+      "tool_name": "创建订单",
+      "tool_params": {"productId": 3, "quantity": 2},
+      "expected": {"intent": "unclear"},
+      "model_output": "{\"intent\":\"unclear\",\"confidence\":0.9,\"reason\":\"用户要求修改参数，不是确认执行\"}"
+    }
+  ]
+}
