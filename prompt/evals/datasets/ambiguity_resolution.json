@@ -1,0 +1,60 @@
+{
+  "name": "ambiguity_resolution",
+  "description": "Ambiguous ERP request resolution replay cases.",
+  "cases": [
+    {
+      "id": "ar_old_way_with_memory",
+      "query": "按照老样子帮我订一下",
+      "user_id": "u1",
+      "session_id": "s1",
+      "pinned_facts": {
+        "productId": "M-1001",
+        "quantity": 120,
+        "supplierId": "S-200"
+      },
+      "preferences": [
+        {
+          "key": "default_supplier",
+          "value": {
+            "supplierId": "S-200",
+            "region": "华东"
+          },
+          "source": "user_confirmed",
+          "confidence": 0.95,
+          "tags": ["supplier"]
+        }
+      ],
+      "expected": {
+        "is_ambiguous": true,
+        "min_confidence": 0.6,
+        "has_resolved_query": true
+      }
+    },
+    {
+      "id": "ar_old_way_without_memory",
+      "query": "照上次那批处理",
+      "user_id": "u2",
+      "session_id": "s2",
+      "pinned_facts": {},
+      "preferences": [],
+      "expected": {
+        "is_ambiguous": true,
+        "min_confidence": 0.3,
+        "has_resolved_query": false
+      }
+    },
+    {
+      "id": "ar_clear_request",
+      "query": "查询物料 M-1001 的库存",
+      "user_id": "u3",
+      "session_id": "s3",
+      "pinned_facts": {},
+      "preferences": [],
+      "expected": {
+        "is_ambiguous": false,
+        "min_confidence": 0,
+        "has_resolved_query": false
+      }
+    }
+  ]
+}

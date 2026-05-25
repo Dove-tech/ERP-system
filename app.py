@@ -6,10 +6,12 @@ from flask import Flask, jsonify, request, g
 from flasgger import Swagger
 from apis.api_planning_hub import ApiPlanningHub
 from entity import Parameter, Tool, Task
+from memory import AmbiguityResolver, ContextManager, MemoryManager
 from tasks import GenerateTaskHub
 from models import LargeLanguageModel
 from tools.tool_manager import ToolManager
 from tasks import TaskManager
+from trace import TraceManager
 from use_manager.user_manager import UserManagerHub
 from utils import RESPONSE_AUTH_CODE_ERROR, RESPONSE_ALLOW_CODE_ERROR, RESPONSE_STATUS_CODE_SUCCESS, DEFAULT_PERMISSIONS
 from utils import TASK_STATUS_FINISH, TASK_STATUS_RUNNING, TASK_STATUS_WAIT_CONFIRM, TASK_TYPE_UNKNOWN, \
@@ -67,6 +69,7 @@ CORS(app, resources={r"/login_user": {"origins": "http://localhost:3000"},
                         r"/delete_tool_by_ids": {"origins": "http://localhost:3000"},
                         r"/test_llm": {"origins": "http://localhost:3000"},
                         r"/api_task_status": {"origins": "http://localhost:3000"},
+                        r"/api_trace_status": {"origins": "http://localhost:3000"},
                         r"/api_planning": {"origins": "http://localhost:3000"}})
 Swagger(app)
 
@@ -74,8 +77,68 @@ Swagger(app)
 #                                 api_key)
 toolManager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
 taskManager = TaskManager(mongo_host, mongo_db, mongo_port)
+memoryManager = MemoryManager(mongo_host, mongo_db, mongo_port)
+contextManager = ContextManager(memoryManager)
+ambiguityResolver = AmbiguityResolver(memoryManager)
+traceManager = TraceManager(mongo_host, mongo_db, mongo_port)
 
 userManagerHub = UserManagerHub(mongo_host, mongo_db, mongo_port)
+
+
+def _current_user_context(data):
+    current_user = getattr(g, "current_user", {}) or {}
+    user_id = str(current_user.get("user_id") or data.get("userId") or data.get("user_id") or "anonymous")
+    session_id = str(
+        data.get("sessionId")
+        or data.get("session_id")
+        or data.get("conversationId")
+        or data.get("conversation_id")
+        or str(uuid.uuid4())
+    )
+    tenant_id = str(data.get("tenantId") or data.get("tenant_id") or "internal")
+    memory_scope = str(data.get("memoryScope") or data.get("memory_scope") or "erp")
+    return user_id, session_id, tenant_id, memory_scope
+
+
+def _is_confirm_feedback(text):
+    feedback = (text or "").lower()
+    confirm_keywords = ["确认", "执行", "继续", "可以", "同意", "ok", "yes", "confirm"]
+    abort_keywords = ["取消", "停止", "放弃", "不要", "不执行", "abort", "cancel", "no"]
+    if any(keyword in feedback for keyword in abort_keywords):
+        return False
+    return any(keyword in feedback for keyword in confirm_keywords)
+
+
+def _is_abort_feedback(text):
+    feedback = (text or "").lower()
+    abort_keywords = ["取消", "停止", "放弃", "不要", "不执行", "abort", "cancel", "no"]
+    return any(keyword in feedback for keyword in abort_keywords)
+
+
+def _persist_assistant_memory(task, query, system_output):
+    if task is None or not getattr(task, "user_id", "") or not getattr(task, "session_id", ""):
+        return
+    memoryManager.add_message(task.user_id, task.session_id, "assistant", system_output or "",
+                              task_id=task.task_id, message_type="system_output")
+    pinned_facts = memoryManager.extract_pinned_facts(query or task.raw_query, task.curr_tool_param or {})
+    merged_facts = {}
+    merged_facts.update(task.pinned_facts or {})
+    merged_facts.update(pinned_facts)
+    contextManager.update_after_turn(task.user_id, task.session_id, task.raw_query,
+                                     system_output or "", pinned_facts=merged_facts)
+
+
+def _run_planning_for_task(task, query, data, curr_model_name, curr_temperature,
+                           curr_api_url, curr_api_key):
+    api_planning_hub = ApiPlanningHub(milvus_uri, model_path, milvus_db_name, curr_model_name,
+                                    curr_temperature, model_top_p, mongo_host, mongo_db, mongo_port, topK,
+                                    curr_api_url, curr_api_key, executor)
+    if not task.trace_id:
+        trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, query,
+                                            selected_skill=task.selected_skill or "")
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, task.system_output or "",
+                                         trace_id=trace_id)
+    api_planning_hub.apis_planning(query, task.task_id)
 
 # 权限验证装饰器
 def require_permission(f):
@@ -699,16 +762,61 @@ def mesh_query():
         if  "taskId" in data and data["taskId"]:
             logger.info(f"人类反馈[{data['taskId']}]开始处理.....")
             task_id = data["taskId"]
-            human_feedback = data["query"]
+            human_feedback = data.get("query", "")
             executor.submit(process_human_feedback, task_id, human_feedback)  # 将人类反馈处理提交到线程池
             return jsonify({'task_id': task_id})
         else:
             # 处理新的查询请求
-            task = taskManager.create_task(data["query"])
+            user_id, session_id, tenant_id, memory_scope = _current_user_context(data)
+            task = taskManager.create_task(
+                data["query"],
+                user_id=user_id,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                memory_scope=memory_scope,
+            )
             logger.info(f"新任务[{task.task_id}]开始处理.....")
+            trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, data["query"])
+            taskManager.update_task_recorder(task.task_id, task.status, task.system_output, trace_id=trace_id)
+            task.trace_id = trace_id
             executor.submit(process_init_task, task, data)  # 将任务提交到线程池
             # threading.Thread(target=process_task, args=(task_id, data)).start()
-            return jsonify({'task_id': task.task_id})
+            return jsonify({'task_id': task.task_id, 'session_id': task.session_id, 'trace_id': task.trace_id})
+
+
+def _handle_pending_ambiguity(task, human_feedback):
+    if task.pending_action != "ambiguity_confirm":
+        return False
+
+    payload = task.pending_payload or {}
+    if _is_abort_feedback(human_feedback):
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消模糊需求执行",
+                                        graph_title="任务已取消", pending_action="", pending_payload={})
+        traceManager.add_event(task.trace_id, "ambiguity_aborted", {"feedback": human_feedback})
+        traceManager.finish_trace(task.trace_id, "用户取消模糊需求执行", status="aborted")
+        return True
+
+    if _is_confirm_feedback(human_feedback) and payload.get("resolved_query"):
+        target_query = payload["resolved_query"]
+        resolution_type = "confirmed_candidate"
+    else:
+        original_query = payload.get("original_query") or task.raw_query
+        target_query = f"{original_query}\n用户补充：{human_feedback}"
+        resolution_type = "user_clarified"
+
+    memoryManager.add_message(task.user_id, task.session_id, "user", human_feedback,
+                              task_id=task.task_id, message_type="ambiguity_feedback")
+    traceManager.add_event(task.trace_id, "ambiguity_resolved", {
+        "resolution_type": resolution_type,
+        "feedback": human_feedback,
+        "target_query": target_query,
+    })
+    taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "模糊需求已确认，继续进行 ERP 任务规划...",
+                                    changed_query=target_query, pending_action="", pending_payload={})
+    refreshed_task = taskManager.get_task_by_id(task.task_id)
+    _run_planning_for_task(refreshed_task, target_query, {}, model_name, model_temperature,
+                           model_base_url, model_api_key)
+    return True
 
 
 def process_human_feedback(task_id, human_feedback):
@@ -731,6 +839,9 @@ def process_human_feedback(task_id, human_feedback):
 
         logger.debug(f"任务{task_id}的人类反馈{human_feedback}的task详情{task.to_dict()}")
 
+        if _handle_pending_ambiguity(task, human_feedback):
+            return
+
         # 更新任务状态为正在处理
         taskManager.update_task_recorder(task_id, TASK_STATUS_RUNNING, "正在处理您的选择")
 
@@ -741,6 +852,10 @@ def process_human_feedback(task_id, human_feedback):
 
         # 处理人类反馈
         api_planning_hub.api_planning_handle_human_feedback(task, human_feedback)
+        updated_task = taskManager.get_task_by_id(task_id)
+        if updated_task is not None and updated_task.status == TASK_STATUS_FINISH:
+            _persist_assistant_memory(updated_task, updated_task.changed_query, updated_task.system_output)
+            traceManager.finish_trace(updated_task.trace_id, updated_task.system_output, status="finished")
 
     except Exception as e:
         logger.error(f"任务[{task_id}]处理人类反馈失败: {e}\n{traceback.format_exc()}")
@@ -752,15 +867,32 @@ def process_init_task(task:Task, data):
     logger.info(f"准备处理任务{task.task_id}，任务数据：{data}，处理中......")
     try:
         query = data["query"]
-        contexts = data["contexts"]
-        isCopilot = data["isCopilot"]
-        isContext = data["isContext"]
-        contextNumber = data["contextNumber"]
+        contexts = data.get("contexts", [])
+        isCopilot = data.get("isCopilot", True)
+        isContext = data.get("isContext", True)
+        contextNumber = int(data.get("contextNumber", 6) or 6)
 
         curr_model_name = model_name
         curr_temperature = model_temperature
         curr_api_key = model_api_key
         curr_api_url = model_base_url
+        memoryManager.add_message(task.user_id, task.session_id, "user", query,
+                                  task_id=task.task_id, message_type="user_query")
+        context_state = contextManager.build_context_state(
+            task.user_id,
+            task.session_id,
+            query,
+            contexts=contexts,
+            context_number=contextNumber,
+            memory_scope=task.memory_scope or "erp",
+        )
+        if not task.trace_id:
+            trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, query)
+            taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务上下文初始化完成",
+                                            trace_id=trace_id,
+                                            pinned_facts=context_state.get("pinned_facts", {}),
+                                            context_summary=context_state.get("summary", ""))
+            task = taskManager.get_task_by_id(task.task_id)
 
         # # 历史遗留问题，曾经允许用户提供自己的模型参数，后关闭了该功能
         # if not(curr_api_key and curr_api_url and curr_model_name):
@@ -788,17 +920,35 @@ def process_init_task(task:Task, data):
         except:
             results = ""
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, results)
+        _persist_assistant_memory(task, query, results)
+        traceManager.finish_trace(task.trace_id, results, status="finished")
         if results is not None and len(results) != 0:
             return jsonify({"nodes": [], "edges": [], "systemOutput": results})
         else:
             return jsonify({"nodes": [], "edges": [], "systemOutput": results}), 400
     else:
         logger.info(f"Task[{task.task_id}] started successfully, Go on ===>")
+
+    ambiguity_result = ambiguityResolver.resolve(query, task.user_id, task.session_id, task.memory_scope or "erp")
+    if ambiguity_result.get("is_ambiguous"):
+        traceManager.add_event(task.trace_id, "ambiguity_detected", ambiguity_result)
+        pending_payload = {
+            "original_query": query,
+            "resolved_query": ambiguity_result.get("resolved_query", ""),
+            "candidate": ambiguity_result.get("candidate", {}),
+            "confidence": ambiguity_result.get("confidence", 0),
+        }
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_WAIT_CONFIRM,
+                                        ambiguity_result.get("message", "请确认模糊需求后继续执行"),
+                                        graph_title="等待模糊需求确认",
+                                        pending_action="ambiguity_confirm",
+                                        pending_payload=pending_payload,
+                                        pinned_facts=context_state.get("pinned_facts", {}),
+                                        context_summary=context_state.get("summary", ""))
+        return
+
     try:
 
-        api_planning_hub = ApiPlanningHub(milvus_uri, model_path, milvus_db_name, curr_model_name,
-                                        curr_temperature,model_top_p, mongo_host, mongo_db, mongo_port, topK,
-                                        curr_api_url, curr_api_key,executor)
         generate_task_hub = GenerateTaskHub(curr_model_name, curr_temperature, model_top_p,
                                             curr_api_url, curr_api_key, mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         if isContext:
@@ -809,10 +959,20 @@ def process_init_task(task:Task, data):
             target_query = generate_task_hub.gen_context_request_task(target_contexts)
         else:
             target_query = query
+        target_query = contextManager.rewrite_query_with_context(target_query, context_state)
 
-        taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务开始处理....",changed_query=target_query)
-        #任务开始实际执行
-        api_planning_hub.apis_planning(target_query, task.task_id)
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务开始处理....",
+                                        changed_query=target_query,
+                                        pinned_facts=context_state.get("pinned_facts", {}),
+                                        context_summary=context_state.get("summary", ""))
+        # 任务开始实际执行
+        refreshed_task = taskManager.get_task_by_id(task.task_id)
+        _run_planning_for_task(refreshed_task, target_query, data, curr_model_name, curr_temperature,
+                               curr_api_url, curr_api_key)
+        updated_task = taskManager.get_task_by_id(task.task_id)
+        if updated_task is not None and updated_task.status == TASK_STATUS_FINISH:
+            _persist_assistant_memory(updated_task, target_query, updated_task.system_output)
+            traceManager.finish_trace(updated_task.trace_id, updated_task.system_output, status="finished")
 
     except Exception as e:
         logger.error(f"用户请求[{query}]的任务[{task.task_id}]处理失败: {e}\n{traceback.format_exc()}")
@@ -900,6 +1060,18 @@ def get_task_status():
         return jsonify({'task': task.to_dict()})
     else:
         return jsonify({'status': 'Task not found or still running'}), 404
+
+
+@app.route('/api_trace_status', methods=['POST'])
+@require_permission
+def get_trace_status():
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Missing query parameter'}), 400
+    trace = traceManager.get_trace(trace_id=data.get("trace_id", ""), task_id=data.get("task_id", ""))
+    if trace:
+        return jsonify({'trace': trace})
+    return jsonify({'status': 'Trace not found'}), 404
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5001)

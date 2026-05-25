@@ -21,5 +21,5 @@ RESPONSE_STATUS_CODE_SUCCESS = 200
 RESPONSE_STATUS_CODE_ERROR = 404
 RESPONSE_AUTH_CODE_ERROR = 401
 RESPONSE_ALLOW_CODE_ERROR = 403
-DEFAULT_PERMISSIONS = ['login', 'logout', 'mesh_query', 'get_task_status']
+DEFAULT_PERMISSIONS = ['login', 'logout', 'mesh_query', 'get_task_status', 'get_trace_status']
 

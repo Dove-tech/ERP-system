@@ -1,0 +1,68 @@
+{
+  "name": "hallucination_guard",
+  "description": "Tool and parameter hallucination guardrail replay cases.",
+  "cases": [
+    {
+      "id": "hg_read_inventory_allow",
+      "query": "查询物料 M-1001 的库存",
+      "selected_skill": "inventory_lookup",
+      "tool": {
+        "tool_id": 11,
+        "operationId": "getInventory",
+        "name_for_human": "查询库存",
+        "description": "查询物料库存",
+        "method": "GET"
+      },
+      "params": {
+        "productId": "M-1001"
+      },
+      "expected": {
+        "guardrail_action": "allow",
+        "risk_level": "read",
+        "has_violations": false
+      }
+    },
+    {
+      "id": "hg_write_order_confirm",
+      "query": "创建订单，物料 M-1001，数量 120",
+      "selected_skill": "customer_order_entry",
+      "tool": {
+        "tool_id": 21,
+        "operationId": "createOrder",
+        "name_for_human": "创建订单",
+        "description": "创建客户订单",
+        "method": "POST"
+      },
+      "params": {
+        "productId": "M-1001",
+        "quantity": 120
+      },
+      "expected": {
+        "guardrail_action": "confirm",
+        "risk_level": "write",
+        "has_violations": false
+      }
+    },
+    {
+      "id": "hg_negative_quantity_clarify",
+      "query": "创建订单，物料 M-1001，数量 -5",
+      "selected_skill": "customer_order_entry",
+      "tool": {
+        "tool_id": 21,
+        "operationId": "createOrder",
+        "name_for_human": "创建订单",
+        "description": "创建客户订单",
+        "method": "POST"
+      },
+      "params": {
+        "productId": "M-1001",
+        "quantity": -5
+      },
+      "expected": {
+        "guardrail_action": "clarify",
+        "risk_level": "write",
+        "has_violations": true
+      }
+    }
+  ]
+}

@@ -19,7 +19,9 @@ class TaskManager:
         self.mongoClient = connect(mongo_db, host=mongo_host, port=mongo_port)
         self.cache_lock = threading.Lock()
 
-    def create_task(self, user_raw_query: str, exists_task_id: str = "") -> Task:
+    def create_task(self, user_raw_query: str, exists_task_id: str = "",
+                    user_id: str = "", session_id: str = "",
+                    tenant_id: str = "internal", memory_scope: str = "erp") -> Task:
         """
         创建任务
         """
@@ -38,11 +40,21 @@ class TaskManager:
             system_output = TASK_SYS_OUTPUT_STOP + "该任务早已结束，请重新登录"
         task = Task()
         task.task_id = task_id
+        task.trace_id = ""
+        task.user_id = str(user_id or "")
+        task.session_id = str(session_id or task_id)
+        task.tenant_id = tenant_id or "internal"
+        task.memory_scope = memory_scope or "erp"
+        task.selected_skill = ""
         task.status = new_task_status
         task.task_type = TASK_TYPE_UNKNOWN
         task.raw_query = user_raw_query
         task.changed_query = user_raw_query
         task.curr_task_desc = ""
+        task.pinned_facts = {}
+        task.context_summary = ""
+        task.pending_action = ""
+        task.pending_payload = {}
         task.edges = []
         task.nodes = []
         task.system_output = system_output
@@ -53,7 +65,9 @@ class TaskManager:
 
     def update_task_recorder(self, task_id: str, task_status: int, system_output: str, graph_title: str = "",
                             curr_task_desc="", task_type: int = TASK_TYPE_MAINTAIN, nodes: list = None,
-                            edges: list = None, curr_tool_id: int = 0, curr_tool_param: dict = None,changed_query="") -> str:
+                            edges: list = None, curr_tool_id: int = 0, curr_tool_param: dict = None, changed_query="",
+                            trace_id=None, selected_skill=None, pinned_facts=None, context_summary=None,
+                            pending_action=None, pending_payload=None) -> str:
         """
         更新任务表update_task
         """
@@ -82,6 +96,18 @@ class TaskManager:
                 task.curr_tool_id = curr_tool_id
             if curr_tool_param:
                 task.curr_tool_param = curr_tool_param
+            if trace_id is not None:
+                task.trace_id = trace_id
+            if selected_skill is not None:
+                task.selected_skill = selected_skill
+            if pinned_facts is not None:
+                task.pinned_facts = pinned_facts
+            if context_summary is not None:
+                task.context_summary = context_summary
+            if pending_action is not None:
+                task.pending_action = pending_action
+            if pending_payload is not None:
+                task.pending_payload = pending_payload
 
             task.save()
             task_saved = Task.objects.get(task_id=task_id)

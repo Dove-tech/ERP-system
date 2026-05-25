@@ -1,0 +1,22 @@
+{
+  "name": "task_classification",
+  "description": "Agent root task classification replay cases.",
+  "cases": [
+    {
+      "id": "tc_single_inventory_lookup",
+      "query": "查询物料 M-1001 的当前库存",
+      "model_output": "single",
+      "expected": {
+        "task_type": "single"
+      }
+    },
+    {
+      "id": "tc_multi_order_plan",
+      "query": "根据客户订单 O-9001 查询库存，如果缺料就推荐供应商并调整生产计划",
+      "model_output": "multi",
+      "expected": {
+        "task_type": "multi"
+      }
+    }
+  ]
+}

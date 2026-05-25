@@ -1,5 +1,6 @@
 import numpy as np
 from openai import OpenAI
+from utils.config import model_api_key, model_base_url
 
 
 class RemoteEmbeddingModel:
@@ -14,8 +15,8 @@ class RemoteEmbeddingModel:
 
     def __init__(self):
         self.openai_client = OpenAI(
-            api_key="sk-8709f7ed33dc402a8a9885a1a8ee403e",
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key=model_api_key,
+            base_url=model_base_url
         )
         # self.openai_client = OpenAI(
         #     api_key="admin1234",

@@ -1,0 +1,42 @@
+{
+  "name": "param_extraction",
+  "description": "ERP parameter extraction replay cases.",
+  "cases": [
+    {
+      "id": "pe_order_entry_complete",
+      "query": "录入客户订单，产品 M-1001，数量 120，交期 2026-06-15，配送到华东",
+      "model_params": {
+        "productId": "M-1001",
+        "quantity": 120,
+        "deliveryDate": "2026-06-15",
+        "region": "华东"
+      },
+      "model_missing": [],
+      "expected": {
+        "params": {
+          "productId": "M-1001",
+          "quantity": 120,
+          "deliveryDate": "2026-06-15",
+          "region": "华东"
+        },
+        "missing": []
+      }
+    },
+    {
+      "id": "pe_missing_delivery_date",
+      "query": "帮我给 M-2008 下一个 300 件的生产订单",
+      "model_params": {
+        "productId": "M-2008",
+        "quantity": 300
+      },
+      "model_missing": ["deliveryDate"],
+      "expected": {
+        "params": {
+          "productId": "M-2008",
+          "quantity": 300
+        },
+        "missing": ["deliveryDate"]
+      }
+    }
+  ]
+}

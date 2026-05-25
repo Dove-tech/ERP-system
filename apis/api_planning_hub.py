@@ -1,10 +1,13 @@
 import json
 
 from apis.api_selection_hub import ApiSelectionHub
+from guardrails import HallucinationGuard
 from models import LargeLanguageModel
 from param_extraction.param_extraction_hub import ParamExtractionHub
+from skills import ERPSkillRegistry
 from tasks import TaskManager,GenerateTaskHub
 from tools import ToolSummaryHub, ToolUseHub, ToolManager
+from trace import TraceManager
 from utils import logger, TASK_ERROR_CODE, TASK_SUCCESS_CODE, RESPONSE_STATUS_CODE_SUCCESS, TASK_STATUS_FINISH, \
     TASK_STATUS_RUNNING, TASK_STATUS_WAIT_CONFIRM, TASK_INIT_TOOL_ID, TASK_TYPE_SINGLE, TASK_TYPE_APIS, \
     TASK_TYPE_UNKNOWN, TASK_TYPE_MAINTAIN, GRAPH_TITLE_SUCESS, GRAPH_TITLE_FAILURE, TASK_SYS_OUTPUT_STOP
@@ -39,6 +42,9 @@ class ApiPlanningHub:
         self.generate_task_hub = GenerateTaskHub(model, temperature, top_p, api_url, api_key, mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         self.task_manager = TaskManager(mongo_host, mongo_db, mongo_port)
         self.tool_manager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
+        self.trace_manager = TraceManager(mongo_host, mongo_db, mongo_port)
+        self.skill_registry = ERPSkillRegistry()
+        self.hallucination_guard = HallucinationGuard()
         self.executor = executor
         self.llm = LargeLanguageModel(api_url, api_key)
         self.model = model
@@ -51,8 +57,23 @@ class ApiPlanningHub:
         result = self.llm.chat_completions(prompt, self.model, self.temperature, self.top_p)
         return result
 
+    def _guard_final_answer(self, task, answer, evidences):
+        grounding = self.hallucination_guard.check_answer_grounding(answer, evidences)
+        self.trace_manager.add_event(task.trace_id, "answer_grounding_checked", grounding)
+        if grounding.get("grounded", True):
+            return answer
+        unsupported = "、".join(grounding.get("unsupported_claims", []))
+        return f"{answer}\n\n需人工复核：最终回答中存在缺少工具返回证据的表述：{unsupported}"
+
     def _set_task_type(self, query, task_id, task_type, system_output):
         logger.debug(f"用户请求[{query}]生成任务[{task_id}]{system_output}")
+        task = self.task_manager.get_task_by_id(task_id)
+        if task is not None:
+            self.trace_manager.add_event(task.trace_id, "task_classified", {
+                "query": query,
+                "task_type": task_type,
+                "system_output": system_output,
+            })
         self.task_manager.update_task_recorder(task_id, TASK_STATUS_RUNNING, system_output, task_type=task_type)
 
     def _update_task_curr_desc(self,task_id,task_desc):
@@ -89,6 +110,7 @@ class ApiPlanningHub:
             #     return
             if task_new_result["code"] != TASK_SUCCESS_CODE:
                 self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+system_output, graph_title=GRAPH_TITLE_FAILURE)
+                self.trace_manager.finish_trace(task.trace_id, system_output, status="failed")
                 return
             nodes.append({
                 "id": str(index),
@@ -133,6 +155,7 @@ class ApiPlanningHub:
         logger.debug(f"任务{task.task_id}保存图像的节点[{nodes}]和边[{edges}]")
         if is_end:
             self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, system_output, graph_title, nodes=nodes, edges=edges)
+            self.trace_manager.finish_trace(task.trace_id, system_output, status="finished")
         else:
             self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, system_output, graph_title, nodes=nodes, edges=edges)
         return
@@ -215,7 +238,7 @@ class ApiPlanningHub:
         else:
             return None, None, None
 
-    def _tool_check(self, tool, task_desc, raw_query):
+    def _tool_check(self, tool, task_desc, raw_query, selected_skill=""):
         """
         对工具的检查，此函数接收工具和用户查询语句
 
@@ -247,6 +270,20 @@ class ApiPlanningHub:
                     "param": {},
                     "query": task_desc,
                     "task_description": reason
+                }
+            guard_result = self.hallucination_guard.validate_tool_call(
+                tool, new_params, raw_query, selected_skill=selected_skill
+            )
+            if guard_result["violations"]:
+                return {
+                    "code": TASK_ERROR_CODE,
+                    "result": "hallucination_guard",
+                    "tool": "异常调用节点-参数或事实缺乏可靠来源",
+                    "missing_param": [],
+                    "param": new_params,
+                    "query": task_desc,
+                    "task_description": "；".join(guard_result["violations"]),
+                    "guardrail": guard_result,
                 }
         else:
             logger.debug(f"[{raw_query}:{task_desc}]缺失参数，进行参数的补齐....")
@@ -285,6 +322,20 @@ class ApiPlanningHub:
                     "query": task_desc,
                     "task_description": reason
                 }
+            guard_result = self.hallucination_guard.validate_tool_call(
+                tool, params, raw_query, selected_skill=selected_skill
+            )
+            if guard_result["violations"]:
+                return {
+                    "code": TASK_ERROR_CODE,
+                    "result": "hallucination_guard",
+                    "tool": "异常调用节点-参数或事实缺乏可靠来源",
+                    "missing_param": [],
+                    "param": params,
+                    "query": task_desc,
+                    "task_description": "；".join(guard_result["violations"]),
+                    "guardrail": guard_result,
+                }
 
         return {
             "code": TASK_SUCCESS_CODE,
@@ -293,7 +344,10 @@ class ApiPlanningHub:
             "missing_param": missing_params_supplemented,
             "param": params,
             "query": task_desc,
-            "task_description": task_desc
+            "task_description": task_desc,
+            "guardrail": self.hallucination_guard.validate_tool_call(
+                tool, params, raw_query, selected_skill=selected_skill
+            ),
         }
 
 
@@ -316,15 +370,40 @@ class ApiPlanningHub:
         :return:
             一个字典，包含处理结果的相关信息，如状态码、工具名称、结果内容、缺失参数信息、参数列表和任务描述等
         """
+        task = self.task_manager.get_task_by_id(task_id)
+        selected_skill = task.selected_skill if task is not None else ""
         tool = self.api_selection_hub.get_tool_coarse_and_fine(task_desc, None, topK=self.topK)
 
         if tool is None:
             txt = f"您的要求[{raw_query}]未找到合适的工具，请换个问法或问题再试试。"
             logger.warning(txt)
+            if task is not None:
+                self.trace_manager.add_event(task.trace_id, "no_tool_found", {
+                    "query": task_desc,
+                    "raw_query": raw_query,
+                    "guardrail_action": "clarify",
+                    "hallucination_type": "tool",
+                })
             self.task_manager.update_task_recorder(task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+txt, graph_title=GRAPH_TITLE_FAILURE)
+            if task is not None:
+                self.trace_manager.finish_trace(task.trace_id, txt, status="failed")
         else:
-            result = self._tool_check(tool, task_desc, raw_query)
+            if task is not None:
+                self.trace_manager.add_event(task.trace_id, "tool_selected", {
+                    "query": task_desc,
+                    "tool_id": tool.tool_id,
+                    "operation_id": tool.operationId,
+                    "tool_name": tool.name_for_human,
+                    "selected_skill": selected_skill,
+                })
+            result = self._tool_check(tool, task_desc, raw_query, selected_skill=selected_skill)
             if result["code"] == TASK_SUCCESS_CODE:
+                if task is not None:
+                    self.trace_manager.add_event(task.trace_id, "params_extracted", {
+                        "tool_id": tool.tool_id,
+                        "params": result["param"],
+                        "guardrail": result.get("guardrail", {}),
+                    })
                 system_output = f'''根据您的查询要求{raw_query}，我发现目前需要使用工具{tool.name_for_human}，
                 相关参数是[{result["param"]}]。\n请确认该工具是否正确且立即使用。如果您想停止本次任务执行也请告诉我。
                 \n如果该工具正确且立即使用，建议回答‘立即执行’;
@@ -334,7 +413,15 @@ class ApiPlanningHub:
                                                         curr_task_desc=task_desc,curr_tool_id=tool.tool_id, curr_tool_param=result["param"])
 
             else:
+                if task is not None:
+                    self.trace_manager.add_event(task.trace_id, "guardrail_blocked", {
+                        "tool": result.get("tool"),
+                        "reason": result.get("task_description"),
+                        "guardrail": result.get("guardrail", {}),
+                    })
                 self.task_manager.update_task_recorder(task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+result["task_description"], graph_title=GRAPH_TITLE_FAILURE, )
+                if task is not None:
+                    self.trace_manager.finish_trace(task.trace_id, result["task_description"], status="guardrail_blocked")
                 # return result
 
     def api_planning_handle_human_feedback(self, task, human_feedback):
@@ -362,6 +449,12 @@ class ApiPlanningHub:
             
             # 进行意图识别
             intent = self._recognize_human_intent(human_feedback, tool, curr_tool_param)
+            self.trace_manager.add_event(task.trace_id, "human_feedback_intent", {
+                "feedback": human_feedback,
+                "intent": intent,
+                "tool_id": curr_tool_id,
+                "params": curr_tool_param,
+            })
             
             # 根据意图执行不同操作
             if intent == "confirm":
@@ -376,6 +469,7 @@ class ApiPlanningHub:
                                                                 graph_title=GRAPH_TITLE_FAILURE)
                         return
                     summary = self.tool_summary_hub.tool_summary(task.changed_query, [invoke_result])
+                    summary = self._guard_final_answer(task, summary, [invoke_result.get("result", "")])
                     self._update_task_node_edge(task, invoke_result,summary,True)
                     # self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, summary, graph_title="任务完成")
                     logger.info(f"任务[{task.changed_query}]，ID[{task.task_id}]：已完成，任务摘要[{summary}]")
@@ -409,11 +503,14 @@ class ApiPlanningHub:
                     if flag and task_description is None:
                         context = self._get_summary_from_nodes(task)
                         summary = self.tool_summary_hub.tool_summary(task.changed_query, context)
+                        summary = self._guard_final_answer(task, summary, [json.dumps(context, ensure_ascii=False)])
                         self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, summary, graph_title="任务完成")
+                        self.trace_manager.finish_trace(task.trace_id, summary, status="finished")
 
             elif intent == "abort":
                 # 放弃任务执行
                 self.task_manager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已为您放弃任务执行")
+                self.trace_manager.finish_trace(task.trace_id, "用户放弃任务执行", status="aborted")
             elif intent == "unclear":
                 # 意图不明确，再次请求确认
                 system_output = f'''您的反馈"{human_feedback}"不够明确，请重新确认：
@@ -432,6 +529,12 @@ class ApiPlanningHub:
 
     def _process_single_api_invoke(self,query,task,tool,params):
         logger.debug(f"[{query}]准备进行工具{tool.operationId}调用,参数为：{params}")
+        self.trace_manager.add_event(task.trace_id, "tool_invocation_started", {
+            "tool_id": tool.tool_id,
+            "operation_id": tool.operationId,
+            "tool_name": tool.name_for_human,
+            "params": params,
+        })
         single_tool_response = self.tool_use_hub.tool_use(tool, params)
         logger.debug(f"[{query}]工具{tool.operationId}调用完成,响应为：{single_tool_response}")
         if single_tool_response.status_code != RESPONSE_STATUS_CODE_SUCCESS:
@@ -463,6 +566,12 @@ class ApiPlanningHub:
                 "task_description": query
             }
         logger.debug(f"[{query}]工具{tool.operationId}调用返回值：{result}")
+        self.trace_manager.add_event(task.trace_id, "tool_invocation_finished", {
+            "tool_id": tool.tool_id,
+            "operation_id": tool.operationId,
+            "status_code": single_tool_response.status_code,
+            "result_summary": result.get("result"),
+        })
         return result
 
     def _get_summary_from_nodes(self,task):
@@ -564,6 +673,16 @@ class ApiPlanningHub:
             包含状态码、工具名称、结果内容、缺失参数信息、参数列表和任务描述等
         """
 
+        task = self.task_manager.get_task_by_id(task_id)
+        skill_match = self.skill_registry.match(query)
+        if task is not None:
+            self.trace_manager.add_event(task.trace_id, "skill_selected", skill_match)
+            self.task_manager.update_task_recorder(
+                task_id,
+                TASK_STATUS_RUNNING,
+                "正在识别 ERP Skill 和任务类型...",
+                selected_skill=skill_match["skill_id"],
+            )
         is_single_task, root_task_description = self.generate_task_hub.gen_root_task(query)
         logger.debug(f"系统初始处理[{query}]，is_single_task={is_single_task},任务描述为：{root_task_description}")
         if is_single_task:

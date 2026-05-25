@@ -1,0 +1,22 @@
+{
+  "name": "tool_chain",
+  "description": "Multi-tool ERP workflow replay cases.",
+  "cases": [
+    {
+      "id": "chain_shortage_plan_adjustment",
+      "query": "订单 O-9001 如果库存不足，就查供应商并调整生产计划",
+      "model_steps": ["query_order", "query_inventory", "query_supplier", "update_plan"],
+      "expected": {
+        "steps": ["query_order", "query_inventory", "query_supplier", "update_plan"]
+      }
+    },
+    {
+      "id": "chain_progress_update",
+      "query": "把生产订单 PO-7788 的进度更新为生产中",
+      "model_steps": ["query_order", "update_status"],
+      "expected": {
+        "steps": ["query_order", "update_status"]
+      }
+    }
+  ]
+}

@@ -7,12 +7,33 @@ import traceback
 from tools.tool_manager import ToolManager
 from utils import sim_api_key
 import json
+from cachetools import TTLCache
 
 
 class ToolUseHub:
     def __init__(self, name):
         self.name = name
         self.retries = 3
+        self.read_cache = TTLCache(maxsize=200, ttl=300)
+
+    def _is_cacheable(self, tool: Tool) -> bool:
+        return (tool.method or "").upper() == "GET"
+
+    def _cache_key(self, tool: Tool, request_body: dict) -> str:
+        return json.dumps({
+            "tool_id": tool.tool_id,
+            "operationId": tool.operationId,
+            "path": tool.path,
+            "params": request_body or {},
+        }, ensure_ascii=False, sort_keys=True)
+
+    def _response_from_cache(self, cached: dict) -> Response:
+        response = Response()
+        response.status_code = cached["status_code"]
+        response._content = cached["text"].encode("utf-8")
+        response.headers.update(cached.get("headers", {}))
+        response.encoding = "utf-8"
+        return response
 
     def tool_use(self, tool: Tool, requestBody: dict):
         """
@@ -29,6 +50,11 @@ class ToolUseHub:
 
         try:
             url = f"{tool.api_url}{tool.path}"
+            requestBody = dict(requestBody or {})
+            cache_key = self._cache_key(tool, requestBody)
+            if self._is_cacheable(tool) and cache_key in self.read_cache:
+                logger.info(f"命中低风险工具缓存[{tool.operationId}]")
+                return self._response_from_cache(self.read_cache[cache_key])
             logger.info(f"准备调用工具[{url}：{requestBody}]....")
             param_request = {}
             for param in tool.request_body:
@@ -63,6 +89,12 @@ class ToolUseHub:
             # 获取并记录剩余调用次数
             remaining_calls = response.headers.get('X-Remaining-Calls', 'N/A')
             logger.info(f"API 调用成功，剩余调用次数: {remaining_calls}")
+            if self._is_cacheable(tool) and response.ok:
+                self.read_cache[cache_key] = {
+                    "status_code": response.status_code,
+                    "text": response.text,
+                    "headers": dict(response.headers),
+                }
         except Exception as e:
             logger.error(f"调用工具[{url}：{requestBody}]失败: {e}\n{traceback.format_exc()}")
             return response

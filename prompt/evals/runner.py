@@ -11,6 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models import LargeLanguageModel
+from guardrails import HallucinationGuard
+from memory.ambiguity_resolver import AmbiguityResolver
 from prompt.prompt_hub import create_prompt_hub
 
 
@@ -111,10 +113,87 @@ def run_tool_summary(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bo
     return passed, {"output": output, "expected_keywords": keywords}
 
 
+def run_task_classification(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    output = case.get("model_output", "")
+    expected = case["expected"]["task_type"]
+    normalized = str(output).strip().lower()
+    passed = normalized == expected
+    return passed, {"actual": normalized, "expected": expected}
+
+
+def run_param_extraction(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    actual_params = case.get("model_params", {})
+    actual_missing = sorted(case.get("model_missing", []))
+    expected_params = case["expected"].get("params", {})
+    expected_missing = sorted(case["expected"].get("missing", []))
+    passed = actual_params == expected_params and actual_missing == expected_missing
+    return passed, {
+        "actual_params": actual_params,
+        "expected_params": expected_params,
+        "actual_missing": actual_missing,
+        "expected_missing": expected_missing,
+    }
+
+
+def run_hallucination_guard(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    tool = SimpleNamespace(**case["tool"])
+    result = HallucinationGuard().validate_tool_call(
+        tool,
+        case.get("params", {}),
+        case.get("query", ""),
+        selected_skill=case.get("selected_skill", ""),
+    )
+    expected = case["expected"]
+    passed = (
+        result["guardrail_action"] == expected["guardrail_action"]
+        and result["risk_level"] == expected["risk_level"]
+        and bool(result["violations"]) == expected.get("has_violations", False)
+    )
+    return passed, {"actual": result, "expected": expected}
+
+
+class DummyMemoryManager:
+    def __init__(self, case: Dict[str, Any]):
+        self.case = case
+
+    def get_preferences(self, user_id: str, memory_scope: str = "erp", limit: int = 10):
+        return self.case.get("preferences", [])
+
+    def get_summary(self, user_id: str, session_id: str):
+        return {
+            "summary": self.case.get("summary", ""),
+            "pinned_facts": self.case.get("pinned_facts", {}),
+        }
+
+
+def run_ambiguity_resolution(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    resolver = AmbiguityResolver(DummyMemoryManager(case))
+    result = resolver.resolve(case["query"], case.get("user_id", "u1"), case.get("session_id", "s1"))
+    expected = case["expected"]
+    passed = (
+        result.get("is_ambiguous") == expected["is_ambiguous"]
+        and result.get("confidence", 0) >= expected.get("min_confidence", 0)
+        and bool(result.get("resolved_query")) == expected.get("has_resolved_query", False)
+    )
+    return passed, {"actual": result, "expected": expected}
+
+
+def run_tool_chain(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    actual = case.get("model_steps", [])
+    expected = case["expected"].get("steps", [])
+    passed = actual == expected
+    return passed, {"actual": actual, "expected": expected}
+
+
 RUNNERS = {
     "human_feedback_intent": run_human_feedback_intent,
     "tool_selection": run_tool_selection,
     "tool_summary": run_tool_summary,
+    "task_classification": run_task_classification,
+    "param_extraction": run_param_extraction,
+    "hallucination_guard": run_hallucination_guard,
+    "ambiguity_resolution": run_ambiguity_resolution,
+    "tool_chain": run_tool_chain,
 }
 
 
