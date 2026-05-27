@@ -819,6 +819,45 @@ def _handle_pending_ambiguity(task, human_feedback):
     return True
 
 
+def _handle_pending_rewrite_grounding(task, human_feedback):
+    if task.pending_action != "rewrite_grounding_clarify":
+        return False
+
+    payload = task.pending_payload or {}
+    if _is_abort_feedback(human_feedback):
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消该请求执行",
+                                        graph_title="任务已取消", pending_action="", pending_payload={})
+        traceManager.add_event(task.trace_id, "rewrite_grounding_aborted", {"feedback": human_feedback})
+        traceManager.finish_trace(task.trace_id, "用户取消该请求执行", status="aborted")
+        return True
+
+    if _is_confirm_feedback(human_feedback) and payload.get("candidate_query"):
+        target_query = payload["candidate_query"]
+        resolution_type = "user_confirmed_rewrite"
+    else:
+        original_query = payload.get("original_query") or task.raw_query
+        target_query = f"{original_query}\n用户澄清：{human_feedback}"
+        resolution_type = "user_clarified_rewrite"
+
+    context_state = payload.get("context_state") or {}
+    if context_state:
+        target_query = contextManager.rewrite_query_with_context(target_query, context_state)
+
+    memoryManager.add_message(task.user_id, task.session_id, "user", human_feedback,
+                              task_id=task.task_id, message_type="rewrite_grounding_feedback")
+    traceManager.add_event(task.trace_id, "rewrite_grounding_resolved", {
+        "resolution_type": resolution_type,
+        "feedback": human_feedback,
+        "target_query": target_query,
+    })
+    taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "请求信息已澄清，继续进行 ERP 任务规划...",
+                                    changed_query=target_query, pending_action="", pending_payload={})
+    refreshed_task = taskManager.get_task_by_id(task.task_id)
+    _run_planning_for_task(refreshed_task, target_query, {}, model_name, model_temperature,
+                           model_base_url, model_api_key)
+    return True
+
+
 def process_human_feedback(task_id, human_feedback):
     """
     处理人类反馈的函数
@@ -838,6 +877,9 @@ def process_human_feedback(task_id, human_feedback):
             return
 
         logger.debug(f"任务{task_id}的人类反馈{human_feedback}的task详情{task.to_dict()}")
+
+        if _handle_pending_rewrite_grounding(task, human_feedback):
+            return
 
         if _handle_pending_ambiguity(task, human_feedback):
             return
@@ -929,7 +971,13 @@ def process_init_task(task:Task, data):
     else:
         logger.info(f"Task[{task.task_id}] started successfully, Go on ===>")
 
-    ambiguity_result = ambiguityResolver.resolve(query, task.user_id, task.session_id, task.memory_scope or "erp")
+    ambiguity_llm = LargeLanguageModel(curr_api_url, curr_api_key) if ambiguityResolver.is_ambiguous(query) else None
+    ambiguity_result = ambiguityResolver.resolve(query, task.user_id, task.session_id, task.memory_scope or "erp",
+                                                context_state=context_state,
+                                                llm=ambiguity_llm,
+                                                model=curr_model_name,
+                                                temperature=curr_temperature,
+                                                top_p=model_top_p)
     if ambiguity_result.get("is_ambiguous"):
         traceManager.add_event(task.trace_id, "ambiguity_detected", ambiguity_result)
         pending_payload = {
@@ -937,6 +985,8 @@ def process_init_task(task:Task, data):
             "resolved_query": ambiguity_result.get("resolved_query", ""),
             "candidate": ambiguity_result.get("candidate", {}),
             "confidence": ambiguity_result.get("confidence", 0),
+            "llm_used": ambiguity_result.get("llm_used", False),
+            "grounding": ambiguity_result.get("grounding", {}),
         }
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_WAIT_CONFIRM,
                                         ambiguity_result.get("message", "请确认模糊需求后继续执行"),
@@ -959,6 +1009,34 @@ def process_init_task(task:Task, data):
             target_query = generate_task_hub.gen_context_request_task(target_contexts)
         else:
             target_query = query
+        rewrite_grounding = contextManager.validate_query_grounding(target_query, context_state)
+        if not rewrite_grounding.get("is_grounded"):
+            traceManager.add_event(task.trace_id, "rewrite_grounding_failed", {
+                "target_query": target_query,
+                "grounding": rewrite_grounding,
+            })
+            unsupported_text = json.dumps(rewrite_grounding.get("unsupported_entities", []), ensure_ascii=False)
+            pending_payload = {
+                "original_query": query,
+                "candidate_query": target_query,
+                "grounding": rewrite_grounding,
+                "context_state": context_state,
+            }
+            taskManager.update_task_recorder(
+                task.task_id,
+                TASK_STATUS_WAIT_CONFIRM,
+                f"为了确认我对上下文的理解是否准确，我发现当前理解出的请求里有些关键信息没有在现有对话、已确认信息或记忆中找到来源：{unsupported_text}。请确认是否按这个理解继续，或直接补充正确的产品、订单、数量、交期、供应商等信息。",
+                graph_title="等待请求澄清",
+                pending_action="rewrite_grounding_clarify",
+                pending_payload=pending_payload,
+                pinned_facts=context_state.get("pinned_facts", {}),
+                context_summary=context_state.get("summary", ""),
+            )
+            return
+        traceManager.add_event(task.trace_id, "rewrite_grounding_checked", {
+            "target_query": target_query,
+            "grounding": rewrite_grounding,
+        })
         target_query = contextManager.rewrite_query_with_context(target_query, context_state)
 
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务开始处理....",

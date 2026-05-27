@@ -88,10 +88,12 @@ app.py
 - 上下文由 `current_query`、`recent_messages`、`summary`、`pinned_facts`、`retrieved_memory` 组成。
 - 已确认字段会进入 `pinned_facts`，例如物料、订单、数量、交期、区域、生产线。
 - Copilot 模式会把前端上下文和后端 scoped memory 组合成新的 `target_query`，再进入原有 API planning。
+- 新增 `target_query` grounding 校验：从改写后的请求中抽取产品、订单、数量、交期、区域、生产线、供应商等关键实体，要求它们必须能在 `contexts`、`pinned_facts`、会话摘要或长期记忆中找到来源。
+- 如果关键实体缺少来源，任务不会继续进入 API planning，而是写入 `pending_action=rewrite_grounding_clarify`，进入澄清/确认流程；用户确认后按候选改写继续，用户补充信息时按补充后的请求继续。
 
 面试表达：
 
-> 长上下文不是简单截断，而是状态构造。最新输入、摘要、关键事实和长期偏好有不同优先级，ERP 关键字段必须结构化 pin 住。
+> 长上下文不是简单截断，而是状态构造。最新输入、摘要、关键事实和长期偏好有不同优先级，ERP 关键字段必须结构化 pin 住。对 LLM 改写出的 `target_query` 还要做来源校验，关键实体没有上下文或记忆证据时先澄清，不能带着幻觉进入工具调用。
 
 ## 5. 模糊需求澄清
 
@@ -105,14 +107,16 @@ app.py
 实现内容：
 
 - 识别“老样子”“上次”“照旧”“按原计划”“加急处理”等模糊表达。
-- 如果当前 session 或长期偏好中有候选解释，生成候选方案并让用户确认。
+- 关键词只做低成本初筛；命中模糊表达后，会把 `recent_messages`、`summary`、`pinned_facts`、`retrieved_memory` 交给大模型生成结构化候选方案。
+- 大模型输出必须是 JSON，包含 `candidate_action`、`candidate_query`、`confirm_message`、`missing_fields`、`evidence`、`confidence`。
+- 候选方案进入用户确认前，会做关键实体来源校验；产品、订单、数量、交期、供应商、生产线等信息必须能在上下文或记忆中找到证据。
 - 如果没有可靠记忆，要求用户补充产品、数量、交期、供应商或生产线等关键字段。
 - `Task` 增加 `pending_action` 和 `pending_payload`，用于保存等待确认的候选方案。
 - 用户确认后继续进入原有 API planning；用户补充信息时，将补充内容合并进任务请求再执行。
 
 关键原则：
 
-> 记忆只能生成候选解释，不能替代用户确认。模糊需求涉及 ERP 写操作时必须进入 HITL。
+> 规则负责判断“这是不是模糊需求”，大模型负责把上下文和记忆整理成用户能看懂的候选业务方案。模型只能生成候选解释，不能替代用户确认；候选解释必须带证据，证据不足时进入澄清。
 
 ## 6. Hallucination Control
 
@@ -145,6 +149,7 @@ apis/api_planning_hub.py
 - Parameter hallucination：编造物料、订单、数量、交期等参数。
 - Fact hallucination：最终回答包含工具结果中没有的信息。
 - Memory hallucination：把未确认记忆当事实。
+- Rewrite hallucination：上下文改写时凭空补充关键实体。
 - Workflow hallucination：跳过确认或状态校验直接执行。
 
 ## 7. Trace
