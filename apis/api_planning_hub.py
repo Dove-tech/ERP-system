@@ -288,6 +288,7 @@ class ApiPlanningHub:
         else:
             logger.debug(f"[{raw_query}:{task_desc}]缺失参数，进行参数的补齐....")
 
+            unresolved_missing_params = []
             for missing_param in missing_params:
                 gen_param_query = self.generate_task_hub.gen_param_task(task_desc,
                                                                         json.dumps(params, ensure_ascii=False, indent=4),
@@ -300,15 +301,23 @@ class ApiPlanningHub:
                     params[missing_param.name] = supplement_param
                     missing_params_supplemented.append(supplement_param_result)
                 else:
-                    return {
-                        "code": TASK_ERROR_CODE,
-                        "result": "missing_param",
-                        "tool": "异常调用节点-缺少必要参数",
-                        "missing_param": [],
-                        "param": {},
-                        "query": task_desc,
-                        "task_description": f"通过参数补全Query:{gen_param_query} 无法为 {tool.name_for_human} API 补全缺少参数 {missing_param.name}"
-                    }
+                    unresolved_missing_params.append(missing_param)
+
+            if unresolved_missing_params:
+                missing_descriptions = "、".join(
+                    f"{item.name}（{item.description}）" for item in unresolved_missing_params
+                )
+                return {
+                    "code": TASK_ERROR_CODE,
+                    "result": "missing_param_need_user",
+                    "tool": tool.name_for_human,
+                    "missing_param": [self._parameter_to_dict(item) for item in unresolved_missing_params],
+                    "param": params,
+                    "query": task_desc,
+                    "task_description": f"还需要补充参数 {missing_descriptions} 才能继续调用 {tool.name_for_human}",
+                    "tool_id": tool.tool_id,
+                    "operation_id": tool.operationId,
+                }
 
             logger.debug(f"[{raw_query}:{task_desc}]参数已补全，进行安全检查")
             inject_flag, reason = self.generate_task_hub.gen_judge_task(task_desc, tool, params)
@@ -350,6 +359,15 @@ class ApiPlanningHub:
             ),
         }
 
+    def _parameter_to_dict(self, parameter):
+        return {
+            "name": parameter.name,
+            "description": parameter.description,
+            "type": parameter.type,
+            "format": parameter.format,
+            "required": parameter.required,
+            "enum": list(parameter.enum or []),
+        }
 
     def api_planning_before_human_feedback(self, task_desc, task_id, raw_query):
         """
@@ -410,9 +428,52 @@ class ApiPlanningHub:
                 \n如果您想停止本次任务执行，建议回答‘不执行’;
                 '''
                 self.task_manager.update_task_recorder(task_id, TASK_STATUS_WAIT_CONFIRM, system_output, graph_title="请确认",
-                                                        curr_task_desc=task_desc,curr_tool_id=tool.tool_id, curr_tool_param=result["param"])
+                                                        curr_task_desc=task_desc,curr_tool_id=tool.tool_id, curr_tool_param=result["param"],
+                                                        pending_action="tool_execution_confirm",
+                                                        pending_payload={
+                                                            "tool_id": tool.tool_id,
+                                                            "tool_name": tool.name_for_human,
+                                                            "operation_id": tool.operationId,
+                                                            "params": result["param"],
+                                                            "task_desc": task_desc,
+                                                            "raw_query": raw_query,
+                                                        })
 
             else:
+                if result.get("result") == "missing_param_need_user":
+                    if task is not None:
+                        self.trace_manager.add_event(task.trace_id, "missing_params_need_user", {
+                            "tool_id": tool.tool_id,
+                            "operation_id": tool.operationId,
+                            "known_params": result.get("param", {}),
+                            "missing_params": result.get("missing_param", []),
+                        })
+                    missing_names = "、".join(
+                        f"{item.get('description') or item.get('name')}"
+                        for item in result.get("missing_param", [])
+                    )
+                    pending_payload = {
+                        "original_query": raw_query,
+                        "current_task_desc": task_desc,
+                        "tool_id": tool.tool_id,
+                        "tool_name": tool.name_for_human,
+                        "operation_id": tool.operationId,
+                        "known_params": result.get("param", {}),
+                        "missing_params": result.get("missing_param", []),
+                    }
+                    system_output = f"还需要补充以下信息才能继续：{missing_names}。请直接提供这些信息，或取消本次任务。"
+                    self.task_manager.update_task_recorder(
+                        task_id,
+                        TASK_STATUS_WAIT_CONFIRM,
+                        system_output,
+                        graph_title="等待参数补充",
+                        curr_task_desc=task_desc,
+                        curr_tool_id=tool.tool_id,
+                        curr_tool_param=result.get("param", {}),
+                        pending_action="missing_params_clarify",
+                        pending_payload=pending_payload,
+                    )
+                    return
                 if task is not None:
                     self.trace_manager.add_event(task.trace_id, "guardrail_blocked", {
                         "tool": result.get("tool"),

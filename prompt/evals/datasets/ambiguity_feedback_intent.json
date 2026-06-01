@@ -1,0 +1,72 @@
+{
+  "name": "ambiguity_feedback_intent",
+  "cases": [
+    {
+      "id": "ambiguity_confirm_candidate",
+      "original_query": "按上次方案再下一单",
+      "candidate": {
+        "candidate_query": "为产品 1001 创建 20 件订单，供应商为 3",
+        "evidence": [
+          {
+            "source": "summary",
+            "key": "last_order",
+            "value": "产品 1001，数量 20，供应商 3"
+          }
+        ]
+      },
+      "feedback": "确认，继续",
+      "model_output": "{\"intent\":\"confirm_candidate\",\"revised_query\":\"\",\"filled_facts\":{},\"confidence\":0.96,\"reason\":\"用户确认候选方案\"}",
+      "expected": {
+        "intent": "confirm_candidate"
+      }
+    },
+    {
+      "id": "ambiguity_provide_info",
+      "original_query": "按上次方案再下一单",
+      "candidate": {
+        "candidate_query": "为产品 1001 创建 20 件订单，供应商为 3",
+        "evidence": [
+          {
+            "source": "summary",
+            "key": "last_order",
+            "value": "产品 1001，数量 20，供应商 3"
+          }
+        ]
+      },
+      "feedback": "可以，但这次数量改成 50，供应商换成 2",
+      "model_output": "{\"intent\":\"provide_info\",\"revised_query\":\"按上次方案再下一单，但数量改成 50，供应商换成 2\",\"filled_facts\":{\"quantity\":50,\"supplierId\":2},\"confidence\":0.92,\"reason\":\"用户确认方向但修正了关键字段\"}",
+      "expected": {
+        "intent": "provide_info",
+        "revised_query_contains": ["数量改成 50", "供应商换成 2"],
+        "filled_facts": {
+          "quantity": 50,
+          "supplierId": 2
+        }
+      }
+    },
+    {
+      "id": "ambiguity_abort",
+      "original_query": "照旧处理这个订单",
+      "candidate": {
+        "candidate_query": "将订单 3001 更新为运输中"
+      },
+      "feedback": "算了，取消",
+      "model_output": "{\"intent\":\"abort\",\"revised_query\":\"\",\"filled_facts\":{},\"confidence\":0.98,\"reason\":\"用户取消任务\"}",
+      "expected": {
+        "intent": "abort"
+      }
+    },
+    {
+      "id": "ambiguity_unclear",
+      "original_query": "照旧处理这个订单",
+      "candidate": {
+        "candidate_query": "将订单 3001 更新为运输中"
+      },
+      "feedback": "先看看吧",
+      "model_output": "{\"intent\":\"unclear\",\"revised_query\":\"\",\"filled_facts\":{},\"confidence\":0.28,\"reason\":\"无法判断是否确认或补充\"}",
+      "expected": {
+        "intent": "unclear"
+      }
+    }
+  ]
+}

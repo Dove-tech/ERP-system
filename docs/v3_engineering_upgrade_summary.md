@@ -198,6 +198,8 @@ prompt/evals/datasets/task_classification.json
 prompt/evals/datasets/param_extraction.json
 prompt/evals/datasets/hallucination_guard.json
 prompt/evals/datasets/ambiguity_resolution.json
+prompt/evals/datasets/ambiguity_feedback_intent.json
+prompt/evals/datasets/slot_filling_intent.json
 prompt/evals/datasets/tool_chain.json
 ```
 
@@ -224,15 +226,25 @@ python -m prompt.evals.runner --task all --mode replay --model qwen-max
 当前结果：
 
 ```text
+ambiguity_feedback_intent: 4/4
 ambiguity_resolution: 3/3
 hallucination_guard: 3/3
 human_feedback_intent: 6/6
 param_extraction: 2/2
+slot_filling_intent: 4/4
 task_classification: 2/2
 tool_chain: 2/2
 tool_selection: 3/3
 tool_summary: 2/2
 ```
+
+补充说明：
+
+```text
+docs/user_intent_enhancement_upgrade.md
+```
+
+该文档专门描述用户意图增强改造，包括参数缺失补全、模糊需求反馈识别、pending_action 分流和新增 eval 覆盖。
 
 ## 9. 成本与速度
 

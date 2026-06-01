@@ -1,5 +1,6 @@
 # coding = utf-8
 import json
+import re
 import time
 from flask_cors import CORS
 from flask import Flask, jsonify, request, g
@@ -9,6 +10,7 @@ from entity import Parameter, Tool, Task
 from memory import AmbiguityResolver, ContextManager, MemoryManager
 from tasks import GenerateTaskHub
 from models import LargeLanguageModel
+from prompt.prompt_engineering import PromptRegistry, StructuredOutputParser
 from tools.tool_manager import ToolManager
 from tasks import TaskManager
 from trace import TraceManager
@@ -81,6 +83,7 @@ memoryManager = MemoryManager(mongo_host, mongo_db, mongo_port)
 contextManager = ContextManager(memoryManager)
 ambiguityResolver = AmbiguityResolver(memoryManager)
 traceManager = TraceManager(mongo_host, mongo_db, mongo_port)
+promptRegistry = PromptRegistry()
 
 userManagerHub = UserManagerHub(mongo_host, mongo_db, mongo_port)
 
@@ -115,6 +118,43 @@ def _is_abort_feedback(text):
     return any(keyword in feedback for keyword in abort_keywords)
 
 
+_DIRECT_CONFIRM_FEEDBACK = {
+    "确认", "确认执行", "执行", "立即执行", "执行任务", "继续", "继续执行",
+    "可以", "同意", "没问题", "是的", "按这个继续", "按候选方案继续",
+    "ok", "yes", "confirm",
+}
+_DIRECT_ABORT_FEEDBACK = {
+    "取消", "取消执行", "停止", "停止执行", "放弃", "放弃执行", "不执行",
+    "不要执行", "不用执行", "别执行", "算了", "先不执行", "暂停",
+    "abort", "cancel", "no",
+}
+
+
+def _normalize_control_feedback(text):
+    return re.sub(r"[\s,，。.!！?？;；:：\"'“”‘’]+", "", (text or "").lower())
+
+
+def _direct_control_intent(text):
+    """
+    Only handles short, standalone control replies.
+    Mixed replies such as "可以，但供应商改成 S-200" must go through the
+    scenario-specific LLM parser so added facts are not discarded.
+    """
+    normalized = _normalize_control_feedback(text)
+    if not normalized:
+        return ""
+    if normalized in _DIRECT_ABORT_FEEDBACK:
+        return "abort"
+    if normalized in _DIRECT_CONFIRM_FEEDBACK:
+        return "confirm"
+    if len(normalized) <= 8:
+        if normalized.startswith(("取消", "停止", "放弃", "不执行", "不要执行", "不用执行", "别执行")):
+            return "abort"
+        if normalized.startswith(("确认", "执行", "继续", "同意")):
+            return "confirm"
+    return ""
+
+
 def _persist_assistant_memory(task, query, system_output):
     if task is None or not getattr(task, "user_id", "") or not getattr(task, "session_id", ""):
         return
@@ -139,6 +179,82 @@ def _run_planning_for_task(task, query, data, curr_model_name, curr_temperature,
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, task.system_output or "",
                                          trace_id=trace_id)
     api_planning_hub.apis_planning(query, task.task_id)
+
+
+def _get_tool_by_id(tool_id):
+    tools = toolManager.get_tools_by_ids([tool_id])
+    return tools[0] if tools else None
+
+
+def _parameter_to_dict(parameter):
+    return {
+        "name": parameter.name,
+        "description": parameter.description,
+        "type": parameter.type,
+        "format": parameter.format,
+        "required": parameter.required,
+        "enum": list(parameter.enum or []),
+    }
+
+
+def _validate_tool_params(tool, params):
+    params = dict(params or {})
+    missing = []
+    for parameter in tool.request_body:
+        value = params.get(parameter.name)
+        if parameter.required and value in ("", None, [], {}):
+            missing.append(_parameter_to_dict(parameter))
+            continue
+        if value in ("", None, [], {}):
+            continue
+        if parameter.type in ("int64", "int32") and not isinstance(value, int):
+            try:
+                params[parameter.name] = int(value)
+            except Exception:
+                params[parameter.name] = ""
+                missing.append(_parameter_to_dict(parameter))
+        elif parameter.type == "double" and not isinstance(value, float):
+            try:
+                params[parameter.name] = float(value)
+            except Exception:
+                params[parameter.name] = ""
+                missing.append(_parameter_to_dict(parameter))
+        elif parameter.enum and str(value) not in parameter.enum:
+            missing.append(_parameter_to_dict(parameter))
+    return params, missing
+
+
+def _render_missing_params_message(missing_params):
+    missing_names = "、".join(item.get("description") or item.get("name") for item in missing_params)
+    return f"还需要补充以下信息才能继续：{missing_names}。请直接提供这些信息，或取消本次任务。"
+
+
+def _request_tool_execution_confirmation(task, tool, params, task_desc, raw_query):
+    system_output = f'''根据您的查询要求{raw_query}，我发现目前需要使用工具{tool.name_for_human}，
+相关参数是[{params}]。
+请确认该工具是否正确且立即使用。如果您想停止本次任务执行也请告诉我。
+
+如果该工具正确且立即使用，建议回答“立即执行”。
+如果您想停止本次任务执行，建议回答“不执行”。
+'''
+    taskManager.update_task_recorder(
+        task.task_id,
+        TASK_STATUS_WAIT_CONFIRM,
+        system_output,
+        graph_title="请确认",
+        curr_task_desc=task_desc,
+        curr_tool_id=tool.tool_id,
+        curr_tool_param=params,
+        pending_action="tool_execution_confirm",
+        pending_payload={
+            "tool_id": tool.tool_id,
+            "tool_name": tool.name_for_human,
+            "operation_id": tool.operationId,
+            "params": params,
+            "task_desc": task_desc,
+            "raw_query": raw_query,
+        },
+    )
 
 # 权限验证装饰器
 def require_permission(f):
@@ -789,20 +905,37 @@ def _handle_pending_ambiguity(task, human_feedback):
         return False
 
     payload = task.pending_payload or {}
-    if _is_abort_feedback(human_feedback):
+    feedback_result = _parse_ambiguity_feedback(payload, human_feedback)
+    intent = feedback_result.get("intent", "unclear")
+
+    if intent == "abort":
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消模糊需求执行",
                                         graph_title="任务已取消", pending_action="", pending_payload={})
         traceManager.add_event(task.trace_id, "ambiguity_aborted", {"feedback": human_feedback})
         traceManager.finish_trace(task.trace_id, "用户取消模糊需求执行", status="aborted")
         return True
 
-    if _is_confirm_feedback(human_feedback) and payload.get("resolved_query"):
+    if intent == "confirm_candidate" and payload.get("resolved_query"):
         target_query = payload["resolved_query"]
         resolution_type = "confirmed_candidate"
-    else:
+    elif intent == "provide_info":
         original_query = payload.get("original_query") or task.raw_query
-        target_query = f"{original_query}\n用户补充：{human_feedback}"
+        target_query = feedback_result.get("revised_query") or f"{original_query}\n用户补充：{human_feedback}"
         resolution_type = "user_clarified"
+    else:
+        taskManager.update_task_recorder(
+            task.task_id,
+            TASK_STATUS_WAIT_CONFIRM,
+            "我还不能确定您的意思。请确认是否按候选方案继续，或直接补充正确的产品、订单、数量、交期、供应商等信息；也可以回复“取消”。",
+            graph_title="等待模糊需求确认",
+            pending_action="ambiguity_confirm",
+            pending_payload=payload,
+        )
+        traceManager.add_event(task.trace_id, "ambiguity_feedback_unclear", {
+            "feedback": human_feedback,
+            "parse": feedback_result,
+        })
+        return True
 
     memoryManager.add_message(task.user_id, task.session_id, "user", human_feedback,
                               task_id=task.task_id, message_type="ambiguity_feedback")
@@ -819,19 +952,136 @@ def _handle_pending_ambiguity(task, human_feedback):
     return True
 
 
+def _parse_ambiguity_feedback(payload, human_feedback):
+    direct_intent = _direct_control_intent(human_feedback)
+    if direct_intent == "abort":
+        return {"intent": "abort", "confidence": 1.0, "reason": "keyword abort"}
+    if direct_intent == "confirm":
+        return {"intent": "confirm_candidate", "confidence": 1.0, "reason": "keyword confirm"}
+
+    prompt = promptRegistry.render("ambiguity_feedback_intent", model_name, {
+        "original_query": payload.get("original_query", ""),
+        "candidate": json.dumps(payload.get("candidate", {}), ensure_ascii=False),
+        "user_feedback": human_feedback,
+    })
+    try:
+        llm = LargeLanguageModel(model_base_url, model_api_key)
+        output = llm.chat_completions(prompt, model_name, model_temperature, model_top_p)
+        return StructuredOutputParser.parse_ambiguity_feedback_intent(output)
+    except Exception as exc:
+        logger.error(f"解析模糊需求反馈失败: {exc}\n{traceback.format_exc()}")
+        return {"intent": "unclear", "confidence": 0.0, "reason": "parse failed"}
+
+
+def _handle_pending_missing_params(task, human_feedback):
+    if task.pending_action != "missing_params_clarify":
+        return False
+
+    payload = task.pending_payload or {}
+    if _direct_control_intent(human_feedback) == "abort":
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消参数补充任务",
+                                        graph_title="任务已取消", pending_action="", pending_payload={})
+        traceManager.add_event(task.trace_id, "missing_params_aborted", {"feedback": human_feedback})
+        traceManager.finish_trace(task.trace_id, "用户取消参数补充任务", status="aborted")
+        return True
+
+    tool = _get_tool_by_id(payload.get("tool_id"))
+    if tool is None:
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"无法找到待补参工具，请重新发起任务",
+                                        graph_title="任务失败", pending_action="", pending_payload={})
+        return True
+
+    parse_result = _parse_slot_filling_feedback(payload, human_feedback)
+    if parse_result.get("intent") == "abort":
+        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消参数补充任务",
+                                        graph_title="任务已取消", pending_action="", pending_payload={})
+        return True
+    if parse_result.get("intent") != "provide_info":
+        taskManager.update_task_recorder(
+            task.task_id,
+            TASK_STATUS_WAIT_CONFIRM,
+            _render_missing_params_message(payload.get("missing_params", [])),
+            graph_title="等待参数补充",
+            pending_action="missing_params_clarify",
+            pending_payload=payload,
+        )
+        traceManager.add_event(task.trace_id, "missing_params_feedback_unclear", {
+            "feedback": human_feedback,
+            "parse": parse_result,
+        })
+        return True
+
+    known_params = dict(payload.get("known_params", {}) or {})
+    known_params.update(parse_result.get("filled_params", {}) or {})
+    known_params, still_missing = _validate_tool_params(tool, known_params)
+    traceManager.add_event(task.trace_id, "missing_params_feedback_parsed", {
+        "feedback": human_feedback,
+        "parse": parse_result,
+        "merged_params": known_params,
+        "still_missing": still_missing,
+    })
+
+    if still_missing:
+        payload["known_params"] = known_params
+        payload["missing_params"] = still_missing
+        taskManager.update_task_recorder(
+            task.task_id,
+            TASK_STATUS_WAIT_CONFIRM,
+            _render_missing_params_message(still_missing),
+            graph_title="等待参数补充",
+            curr_tool_id=tool.tool_id,
+            curr_tool_param=known_params,
+            pending_action="missing_params_clarify",
+            pending_payload=payload,
+        )
+        return True
+
+    memoryManager.add_message(task.user_id, task.session_id, "user", human_feedback,
+                              task_id=task.task_id, message_type="missing_params_feedback")
+    _request_tool_execution_confirmation(
+        task,
+        tool,
+        known_params,
+        payload.get("current_task_desc") or task.curr_task_desc,
+        payload.get("original_query") or task.raw_query,
+    )
+    return True
+
+
+def _parse_slot_filling_feedback(payload, human_feedback):
+    if _direct_control_intent(human_feedback) == "abort":
+        return {"intent": "abort", "filled_params": {}, "confidence": 1.0, "reason": "keyword abort"}
+
+    prompt = promptRegistry.render("slot_filling_intent", model_name, {
+        "tool_name": payload.get("tool_name", ""),
+        "task_description": payload.get("current_task_desc", ""),
+        "known_params": json.dumps(payload.get("known_params", {}), ensure_ascii=False),
+        "missing_params": json.dumps(payload.get("missing_params", []), ensure_ascii=False),
+        "user_feedback": human_feedback,
+    })
+    try:
+        llm = LargeLanguageModel(model_base_url, model_api_key)
+        output = llm.chat_completions(prompt, model_name, model_temperature, model_top_p)
+        return StructuredOutputParser.parse_slot_filling_intent(output)
+    except Exception as exc:
+        logger.error(f"解析参数补充反馈失败: {exc}\n{traceback.format_exc()}")
+        return {"intent": "unclear", "filled_params": {}, "confidence": 0.0, "reason": "parse failed"}
+
+
 def _handle_pending_rewrite_grounding(task, human_feedback):
     if task.pending_action != "rewrite_grounding_clarify":
         return False
 
     payload = task.pending_payload or {}
-    if _is_abort_feedback(human_feedback):
+    direct_intent = _direct_control_intent(human_feedback)
+    if direct_intent == "abort":
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消该请求执行",
                                         graph_title="任务已取消", pending_action="", pending_payload={})
         traceManager.add_event(task.trace_id, "rewrite_grounding_aborted", {"feedback": human_feedback})
         traceManager.finish_trace(task.trace_id, "用户取消该请求执行", status="aborted")
         return True
 
-    if _is_confirm_feedback(human_feedback) and payload.get("candidate_query"):
+    if direct_intent == "confirm" and payload.get("candidate_query"):
         target_query = payload["candidate_query"]
         resolution_type = "user_confirmed_rewrite"
     else:
@@ -877,6 +1127,9 @@ def process_human_feedback(task_id, human_feedback):
             return
 
         logger.debug(f"任务{task_id}的人类反馈{human_feedback}的task详情{task.to_dict()}")
+
+        if _handle_pending_missing_params(task, human_feedback):
+            return
 
         if _handle_pending_rewrite_grounding(task, human_feedback):
             return

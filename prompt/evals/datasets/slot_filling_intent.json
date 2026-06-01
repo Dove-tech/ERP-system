@@ -1,0 +1,100 @@
+{
+  "name": "slot_filling_intent",
+  "cases": [
+    {
+      "id": "slot_fill_supplier",
+      "tool_name": "创建订单",
+      "task_description": "为产品 1001 创建 20 件订单",
+      "known_params": {
+        "productId": 1001,
+        "quantity": 20
+      },
+      "missing_params": [
+        {
+          "name": "supplierId",
+          "description": "物流供应商Id",
+          "type": "int64",
+          "required": true
+        }
+      ],
+      "feedback": "供应商用 3",
+      "model_output": "{\"intent\":\"provide_info\",\"filled_params\":{\"supplierId\":3},\"confidence\":0.91,\"reason\":\"用户提供了物流供应商ID\"}",
+      "expected": {
+        "intent": "provide_info",
+        "filled_params": {
+          "supplierId": 3
+        }
+      }
+    },
+    {
+      "id": "slot_update_existing_and_fill_missing",
+      "tool_name": "创建订单",
+      "task_description": "为产品 1001 创建 20 件订单",
+      "known_params": {
+        "productId": 1001,
+        "quantity": 20
+      },
+      "missing_params": [
+        {
+          "name": "supplierId",
+          "description": "物流供应商Id",
+          "type": "int64",
+          "required": true
+        }
+      ],
+      "feedback": "可以继续，但数量改成 50，供应商是 2",
+      "model_output": "{\"intent\":\"provide_info\",\"filled_params\":{\"quantity\":50,\"supplierId\":2},\"confidence\":0.93,\"reason\":\"用户补充供应商并修正数量\"}",
+      "expected": {
+        "intent": "provide_info",
+        "filled_params": {
+          "quantity": 50,
+          "supplierId": 2
+        }
+      }
+    },
+    {
+      "id": "slot_abort",
+      "tool_name": "创建订单",
+      "task_description": "为产品 1001 创建订单",
+      "known_params": {
+        "productId": 1001
+      },
+      "missing_params": [
+        {
+          "name": "supplierId",
+          "description": "物流供应商Id",
+          "type": "int64",
+          "required": true
+        }
+      ],
+      "feedback": "不执行了，取消",
+      "model_output": "{\"intent\":\"abort\",\"filled_params\":{},\"confidence\":0.98,\"reason\":\"用户取消任务\"}",
+      "expected": {
+        "intent": "abort",
+        "filled_params": {}
+      }
+    },
+    {
+      "id": "slot_unclear",
+      "tool_name": "创建订单",
+      "task_description": "为产品 1001 创建订单",
+      "known_params": {
+        "productId": 1001
+      },
+      "missing_params": [
+        {
+          "name": "supplierId",
+          "description": "物流供应商Id",
+          "type": "int64",
+          "required": true
+        }
+      ],
+      "feedback": "你看着办吧",
+      "model_output": "{\"intent\":\"unclear\",\"filled_params\":{},\"confidence\":0.31,\"reason\":\"没有提供有效参数\"}",
+      "expected": {
+        "intent": "unclear",
+        "filled_params": {}
+      }
+    }
+  ]
+}
