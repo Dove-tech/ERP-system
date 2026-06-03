@@ -2,7 +2,7 @@
 
 本文档说明 `agent-copilot-hitl-v3-engineering` 相比 `agent-copilot-hitl-prompt-engineering` 的工程升级内容。
 
-本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：ERP Skills、session 隔离、scoped memory、长上下文构造、模糊需求澄清、幻觉治理、trace、agent eval、成本与速度优化。
+本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：session 隔离、scoped memory、长上下文构造、模糊需求澄清、幻觉治理、trace、agent eval、成本与速度优化。
 
 未实现的高级展望包括：LangGraph 重构、MCP Server Adapter、多 Agent 拆分、在线评测看板、更复杂的长期记忆冲突治理。
 
@@ -16,26 +16,35 @@ agent-copilot-hitl-v3-engineering
 
 该目录由 `agent-copilot-hitl-prompt-engineering` 复制而来，原工程未作为本次升级的修改对象。
 
-## 2. ERP Skills
+## 2. 工具选择策略
 
-新增：
+当前版本已删除业务能力路由预留模块，不再进行业务能力关键词识别，也不再在 `Task` 或 `TraceRecord` 中记录对应的预留字段。
+
+删除原因：
+
+- 该能力原本的目标是通过业务能力路由缩小候选工具范围，提高工具选择效率。
+- 当前实现只是静态识别业务关键词，并没有真正减少 `ApiSelectionHub` 的候选工具检索范围。
+- 如果继续保留，会让工程说明看起来像已经实现了工具候选集裁剪，但实际工具选择仍然依赖全量工具描述匹配，容易造成架构表达不准确。
+
+当前工具选择链路保持为：
 
 ```text
-skills/
-  __init__.py
-  erp_skills.py
+用户请求/子任务
+-> ApiSelectionHub 全量工具召回与精排
+-> 参数抽取
+-> guardrail 校验
+-> HITL 确认
+-> 工具调用
 ```
 
-实现内容：
+后续如果重新增加业务能力路由，应该让它真正参与候选工具裁剪，例如：
 
-- 增加静态 `ERPSkillRegistry`。
-- 支持订单录入、库存查询、供应商选择、生产计划调整、生产进度更新、模糊需求澄清等 ERP Skill。
-- 在 `ApiPlanningHub.apis_planning()` 中先识别 Skill，再进入任务分类、工具选择和参数抽取。
-- Task 中记录 `selected_skill`，便于 trace、eval 和面试展示。
-
-面试表达：
-
-> 底层仍然是 Tool Registry 管 ERP API，上层用 ERP Skills 封装高频业务流程。Tool 是原子能力，Skill 是业务能力包。
+```text
+用户请求
+-> 业务能力路由
+-> 该业务能力绑定的候选工具集合
+-> 在小工具集合内做工具选择
+```
 
 ## 3. Session 隔离与 Scoped Memory
 
@@ -173,9 +182,9 @@ utils/const.py
 
 实现内容：
 
-- 新增 `TraceRecord`，存储 `trace_id`、`task_id`、`user_id`、`session_id`、`selected_skill`、`events`、`final_answer`、`status`。
+- 新增 `TraceRecord`，存储 `trace_id`、`task_id`、`user_id`、`session_id`、`events`、`final_answer`、`status`。
 - 新任务启动时创建 trace。
-- 关键节点写入 trace：context 初始化、ambiguity detected/resolved、skill selected、task classified、tool selected、params extracted、guardrail blocked、tool invocation started/finished、human feedback intent、answer grounding。
+- 关键节点写入 trace：context 初始化、ambiguity detected/resolved、task classified、tool selected、params extracted、guardrail blocked、tool invocation started/finished、human feedback intent、answer grounding。
 - 新增 `/api_trace_status` 接口，支持按 `trace_id` 或 `task_id` 查询 trace。
 - 默认权限增加 `get_trace_status`。
 
@@ -203,6 +212,15 @@ prompt/evals/datasets/slot_filling_intent.json
 prompt/evals/datasets/tool_chain.json
 ```
 
+新增工作流级集成测试：
+
+```text
+prompt/evals/integration_runner.py
+prompt/evals/integration_datasets/workflows.json
+test/test_integration/test_workflow_metrics.py
+docs/integration_testing.md
+```
+
 保留原有数据集：
 
 ```text
@@ -216,11 +234,14 @@ tool_summary.json
 - eval 从 prompt 级扩展到 agent 链路级。
 - 新增任务分类、参数抽取、幻觉护栏、模糊需求澄清、多工具链路评测。
 - replay 模式不依赖在线模型，适合作为面试演示和回归验证。
+- 新增集成测试 runner，用产品经理整理的“自然语言 -> 标准操作序列”回放 actual trace，计算工具调用准确率、参数正确率、调用时机合理性、无效工具调用占比、工具执行结果利用率、工具异常处理成功率、任务完成度和任务准确率。
 
 验证命令：
 
 ```powershell
 python -m prompt.evals.runner --task all --mode replay --model qwen-max
+python -m prompt.evals.integration_runner
+python -m unittest discover -s test/test_integration -p "test_*.py"
 ```
 
 当前结果：
@@ -236,15 +257,19 @@ task_classification: 2/2
 tool_chain: 2/2
 tool_selection: 3/3
 tool_summary: 2/2
+integration_workflows: 7/7
 ```
 
 补充说明：
 
 ```text
 docs/user_intent_enhancement_upgrade.md
+docs/integration_testing.md
 ```
 
-该文档专门描述用户意图增强改造，包括参数缺失补全、模糊需求反馈识别、pending_action 分流和新增 eval 覆盖。
+`docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、模糊需求反馈识别、pending_action 分流和新增 eval 覆盖。
+
+`docs/integration_testing.md` 专门描述工作流级集成测试，包括 case 数据结构、执行命令和各项指标的计算方式。
 
 ## 9. 成本与速度
 
@@ -271,7 +296,7 @@ models/remote_embedding_model.py
 已执行：
 
 ```powershell
-python -m py_compile app.py apis\api_planning_hub.py tasks\task_manager.py entity\task_entity.py entity\memory_entity.py memory\memory_manager.py memory\context_manager.py memory\ambiguity_resolver.py skills\erp_skills.py guardrails\hallucination_guard.py trace\trace_manager.py tools\tool_use_hub.py models\remote_embedding_model.py prompt\evals\runner.py
+python -m py_compile app.py apis\api_planning_hub.py tasks\task_manager.py entity\task_entity.py entity\memory_entity.py memory\memory_manager.py memory\context_manager.py memory\ambiguity_resolver.py guardrails\hallucination_guard.py trace\trace_manager.py tools\tool_use_hub.py models\remote_embedding_model.py prompt\evals\runner.py
 ```
 
 已执行：
@@ -286,7 +311,7 @@ python -m prompt.evals.runner --task all --mode replay --model qwen-max
 
 推荐主线：
 
-> 这个项目不是普通 Chatbot，而是制造业 ERP Copilot。底层用 Tool Registry 管 ERP OpenAPI，上层用 ERP Skills 封装订单录入、库存查询、供应商选择、生产计划调整等业务能力。执行上用 workflow 和 HITL 控制写操作，用 session scoped memory 和 ContextManager 管住上下文，用 HallucinationGuard 管工具、参数和最终回答幻觉，用 TraceRecord 和 eval datasets 做 badcase 复盘和回归。
+> 这个项目不是普通 Chatbot，而是制造业 ERP Copilot。底层用 Tool Registry 管 ERP OpenAPI，工具选择通过全量工具召回、精排和 LLM 精选完成。执行上用 workflow 和 HITL 控制写操作，用 session scoped memory 和 ContextManager 管住上下文，用 HallucinationGuard 管工具、参数和最终回答幻觉，用 TraceRecord 和 eval datasets 做 badcase 复盘和回归。
 
 边界说明：
 

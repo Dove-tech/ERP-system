@@ -1,0 +1,349 @@
+{
+  "dataset": "integration_workflows",
+  "description": "Workflow-level integration cases built from common ERP operation sequences and their natural language expressions.",
+  "total_cases": 7,
+  "passed_cases": 7,
+  "metrics": {
+    "tool_call_accuracy": 1.0,
+    "parameter_accuracy": 1.0,
+    "task_completion_rate": 1.0,
+    "task_accuracy": 1.0,
+    "timing_reasonableness_rate": 1.0,
+    "invalid_tool_call_rate": 0.0,
+    "tool_result_utilization_rate": 1.0,
+    "tool_exception_handling_success_rate": 1.0
+  },
+  "cases": [
+    {
+      "id": "wf_inventory_lookup",
+      "workflow": "库存查询",
+      "natural_language": "查询产品 1001 的当前库存",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "query_product",
+          "query_inventory"
+        ],
+        "actual_tools": [
+          "query_product",
+          "query_inventory"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "completed",
+        "actual_status": "completed",
+        "required_result_facts": [
+          "productName",
+          "quantityInStock"
+        ],
+        "used_result_facts": [
+          "productName",
+          "quantityInStock"
+        ]
+      },
+      "totals": {
+        "expected_tool_calls": 2,
+        "correct_tool_calls": 2,
+        "expected_params": 2,
+        "correct_params": 2,
+        "actual_tool_calls": 2,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 2,
+        "used_result_facts": 2,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_create_order_full_params",
+      "workflow": "订单录入",
+      "natural_language": "为产品 1001 创建 20 件订单，交期 2026-06-10，供应商 3",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "query_product",
+          "query_supplier",
+          "create_order"
+        ],
+        "actual_tools": [
+          "query_product",
+          "query_supplier",
+          "create_order"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "completed",
+        "actual_status": "completed",
+        "required_result_facts": [
+          "orderId",
+          "status"
+        ],
+        "used_result_facts": [
+          "orderId",
+          "status"
+        ]
+      },
+      "totals": {
+        "expected_tool_calls": 3,
+        "correct_tool_calls": 3,
+        "expected_params": 6,
+        "correct_params": 6,
+        "actual_tool_calls": 3,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 2,
+        "used_result_facts": 2,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_create_order_missing_supplier",
+      "workflow": "参数缺失补全",
+      "natural_language": "为产品 1001 创建 20 件订单，交期 2026-06-10",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "ask_user_clarification"
+        ],
+        "actual_tools": [
+          "ask_user_clarification"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "waiting_user",
+        "actual_status": "waiting_user",
+        "required_result_facts": [],
+        "used_result_facts": []
+      },
+      "totals": {
+        "expected_tool_calls": 1,
+        "correct_tool_calls": 1,
+        "expected_params": 1,
+        "correct_params": 1,
+        "actual_tool_calls": 1,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 0,
+        "used_result_facts": 0,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_ambiguous_repeat_order",
+      "workflow": "模糊需求澄清",
+      "natural_language": "照上次方案再下一单，但是数量改成 50",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "resolve_ambiguity",
+          "ask_user_confirmation"
+        ],
+        "actual_tools": [
+          "resolve_ambiguity",
+          "ask_user_confirmation"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "waiting_user",
+        "actual_status": "waiting_user",
+        "required_result_facts": [],
+        "used_result_facts": []
+      },
+      "totals": {
+        "expected_tool_calls": 2,
+        "correct_tool_calls": 2,
+        "expected_params": 2,
+        "correct_params": 2,
+        "actual_tool_calls": 2,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 0,
+        "used_result_facts": 0,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_plan_adjustment_multi_tool",
+      "workflow": "多工具生产计划调整",
+      "natural_language": "订单 O-9001 如果库存不足，就查询供应商并调整生产计划",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "query_order",
+          "query_inventory",
+          "query_supplier",
+          "update_plan"
+        ],
+        "actual_tools": [
+          "query_order",
+          "query_inventory",
+          "query_supplier",
+          "update_plan"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "completed",
+        "actual_status": "completed",
+        "required_result_facts": [
+          "orderId",
+          "planStatus"
+        ],
+        "used_result_facts": [
+          "orderId",
+          "planStatus"
+        ]
+      },
+      "totals": {
+        "expected_tool_calls": 4,
+        "correct_tool_calls": 4,
+        "expected_params": 5,
+        "correct_params": 5,
+        "actual_tool_calls": 4,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 2,
+        "used_result_facts": 2,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_irrelevant_request_no_tool",
+      "workflow": "无效工具调用拦截",
+      "natural_language": "写一首关于春天的诗",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": null,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [],
+        "actual_tools": [],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "rejected",
+        "actual_status": "rejected",
+        "required_result_facts": [],
+        "used_result_facts": []
+      },
+      "totals": {
+        "expected_tool_calls": 0,
+        "correct_tool_calls": 0,
+        "expected_params": 0,
+        "correct_params": 0,
+        "actual_tool_calls": 0,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 0,
+        "used_result_facts": 0,
+        "exception_cases": 0,
+        "handled_exception_cases": 0
+      }
+    },
+    {
+      "id": "wf_inventory_api_exception",
+      "workflow": "工具异常处理",
+      "natural_language": "查询产品 1001 的库存",
+      "passed": true,
+      "metrics": {
+        "tool_call_accuracy": 1.0,
+        "parameter_accuracy": 1.0,
+        "timing_reasonable": true,
+        "completion_score": 1.0,
+        "result_utilization": 1.0,
+        "exception_handled": true,
+        "final_status_matched": true,
+        "final_answer_matched": true
+      },
+      "detail": {
+        "expected_tools": [
+          "query_inventory",
+          "report_tool_exception"
+        ],
+        "actual_tools": [
+          "query_inventory",
+          "report_tool_exception"
+        ],
+        "invalid_tool_calls": [],
+        "param_mismatches": [],
+        "confirmation_misses": [],
+        "expected_status": "failed_handled",
+        "actual_status": "failed_handled",
+        "required_result_facts": [],
+        "used_result_facts": []
+      },
+      "totals": {
+        "expected_tool_calls": 2,
+        "correct_tool_calls": 2,
+        "expected_params": 2,
+        "correct_params": 2,
+        "actual_tool_calls": 2,
+        "invalid_tool_calls": 0,
+        "required_result_facts": 0,
+        "used_result_facts": 0,
+        "exception_cases": 1,
+        "handled_exception_cases": 1
+      }
+    }
+  ]
+}

@@ -4,7 +4,6 @@ from apis.api_selection_hub import ApiSelectionHub
 from guardrails import HallucinationGuard
 from models import LargeLanguageModel
 from param_extraction.param_extraction_hub import ParamExtractionHub
-from skills import ERPSkillRegistry
 from tasks import TaskManager,GenerateTaskHub
 from tools import ToolSummaryHub, ToolUseHub, ToolManager
 from trace import TraceManager
@@ -43,7 +42,6 @@ class ApiPlanningHub:
         self.task_manager = TaskManager(mongo_host, mongo_db, mongo_port)
         self.tool_manager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         self.trace_manager = TraceManager(mongo_host, mongo_db, mongo_port)
-        self.skill_registry = ERPSkillRegistry()
         self.hallucination_guard = HallucinationGuard()
         self.executor = executor
         self.llm = LargeLanguageModel(api_url, api_key)
@@ -238,7 +236,7 @@ class ApiPlanningHub:
         else:
             return None, None, None
 
-    def _tool_check(self, tool, task_desc, raw_query, selected_skill=""):
+    def _tool_check(self, tool, task_desc, raw_query):
         """
         对工具的检查，此函数接收工具和用户查询语句
 
@@ -272,7 +270,7 @@ class ApiPlanningHub:
                     "task_description": reason
                 }
             guard_result = self.hallucination_guard.validate_tool_call(
-                tool, new_params, raw_query, selected_skill=selected_skill
+                tool, new_params, raw_query
             )
             if guard_result["violations"]:
                 return {
@@ -332,7 +330,7 @@ class ApiPlanningHub:
                     "task_description": reason
                 }
             guard_result = self.hallucination_guard.validate_tool_call(
-                tool, params, raw_query, selected_skill=selected_skill
+                tool, params, raw_query
             )
             if guard_result["violations"]:
                 return {
@@ -355,7 +353,7 @@ class ApiPlanningHub:
             "query": task_desc,
             "task_description": task_desc,
             "guardrail": self.hallucination_guard.validate_tool_call(
-                tool, params, raw_query, selected_skill=selected_skill
+                tool, params, raw_query
             ),
         }
 
@@ -389,7 +387,6 @@ class ApiPlanningHub:
             一个字典，包含处理结果的相关信息，如状态码、工具名称、结果内容、缺失参数信息、参数列表和任务描述等
         """
         task = self.task_manager.get_task_by_id(task_id)
-        selected_skill = task.selected_skill if task is not None else ""
         tool = self.api_selection_hub.get_tool_coarse_and_fine(task_desc, None, topK=self.topK)
 
         if tool is None:
@@ -412,9 +409,8 @@ class ApiPlanningHub:
                     "tool_id": tool.tool_id,
                     "operation_id": tool.operationId,
                     "tool_name": tool.name_for_human,
-                    "selected_skill": selected_skill,
                 })
-            result = self._tool_check(tool, task_desc, raw_query, selected_skill=selected_skill)
+            result = self._tool_check(tool, task_desc, raw_query)
             if result["code"] == TASK_SUCCESS_CODE:
                 if task is not None:
                     self.trace_manager.add_event(task.trace_id, "params_extracted", {
@@ -733,17 +729,6 @@ class ApiPlanningHub:
             一个列表，包含一个或多个字典，每个字典表示一次API调用的处理结果，
             包含状态码、工具名称、结果内容、缺失参数信息、参数列表和任务描述等
         """
-
-        task = self.task_manager.get_task_by_id(task_id)
-        skill_match = self.skill_registry.match(query)
-        if task is not None:
-            self.trace_manager.add_event(task.trace_id, "skill_selected", skill_match)
-            self.task_manager.update_task_recorder(
-                task_id,
-                TASK_STATUS_RUNNING,
-                "正在识别 ERP Skill 和任务类型...",
-                selected_skill=skill_match["skill_id"],
-            )
         is_single_task, root_task_description = self.generate_task_hub.gen_root_task(query)
         logger.debug(f"系统初始处理[{query}]，is_single_task={is_single_task},任务描述为：{root_task_description}")
         if is_single_task:

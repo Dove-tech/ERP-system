@@ -15,7 +15,7 @@ class TraceManager:
         self.mongo_client = connect(mongo_db, host=mongo_host, port=mongo_port)
 
     def start_trace(self, task_id: str, user_id: str, session_id: str,
-                    query: str, selected_skill: str = "") -> str:
+                    query: str) -> str:
         trace_id = str(uuid.uuid4())
         try:
             TraceRecord(
@@ -23,7 +23,6 @@ class TraceManager:
                 task_id=task_id,
                 user_id=str(user_id or ""),
                 session_id=str(session_id or ""),
-                selected_skill=selected_skill or "",
                 query=query or "",
                 events=[],
             ).save()
@@ -72,7 +71,6 @@ class TraceManager:
                 "task_id": item.task_id,
                 "user_id": item.user_id,
                 "session_id": item.session_id,
-                "selected_skill": item.selected_skill,
                 "query": item.query,
                 "events": item.events,
                 "final_answer": item.final_answer,

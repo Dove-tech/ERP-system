@@ -8,7 +8,6 @@ class Task(Document):
     session_id = StringField() # 会话隔离维度
     tenant_id = StringField() # 租户隔离维度，试点阶段默认 internal
     memory_scope = StringField() # 记忆作用域
-    selected_skill = StringField() # 当前命中的 ERP Skill
     status = IntField() # 任务的状态
     task_type = IntField()  # 任务的类型
     raw_query = StringField() # 用户的最初查询请求
@@ -34,7 +33,6 @@ class Task(Document):
             'session_id': self.session_id,
             'tenant_id': self.tenant_id,
             'memoryScope': self.memory_scope,
-            'selectedSkill': self.selected_skill,
             'status': self.status,
             'nodes': self.nodes,
             'edges': self.edges,
@@ -45,3 +43,7 @@ class Task(Document):
             'pendingAction': self.pending_action,
             'pendingPayload': self.pending_payload,
         }
+
+    meta = {
+        "strict": False,
+    }

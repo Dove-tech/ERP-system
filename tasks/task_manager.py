@@ -45,7 +45,6 @@ class TaskManager:
         task.session_id = str(session_id or task_id)
         task.tenant_id = tenant_id or "internal"
         task.memory_scope = memory_scope or "erp"
-        task.selected_skill = ""
         task.status = new_task_status
         task.task_type = TASK_TYPE_UNKNOWN
         task.raw_query = user_raw_query
@@ -66,7 +65,7 @@ class TaskManager:
     def update_task_recorder(self, task_id: str, task_status: int, system_output: str, graph_title: str = "",
                             curr_task_desc="", task_type: int = TASK_TYPE_MAINTAIN, nodes: list = None,
                             edges: list = None, curr_tool_id: int = 0, curr_tool_param: dict = None, changed_query="",
-                            trace_id=None, selected_skill=None, pinned_facts=None, context_summary=None,
+                            trace_id=None, pinned_facts=None, context_summary=None,
                             pending_action=None, pending_payload=None) -> str:
         """
         更新任务表update_task
@@ -98,8 +97,6 @@ class TaskManager:
                 task.curr_tool_param = curr_tool_param
             if trace_id is not None:
                 task.trace_id = trace_id
-            if selected_skill is not None:
-                task.selected_skill = selected_skill
             if pinned_facts is not None:
                 task.pinned_facts = pinned_facts
             if context_summary is not None:

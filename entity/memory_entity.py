@@ -61,7 +61,6 @@ class TraceRecord(Document):
     task_id = StringField()
     user_id = StringField()
     session_id = StringField()
-    selected_skill = StringField()
     query = StringField()
     events = ListField(DictField())
     final_answer = StringField()
@@ -71,5 +70,6 @@ class TraceRecord(Document):
 
     meta = {
         "collection": "agent_traces",
-        "indexes": ["trace_id", "task_id", "user_id", "session_id", "selected_skill"],
+        "indexes": ["trace_id", "task_id", "user_id", "session_id"],
+        "strict": False,
     }

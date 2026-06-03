@@ -142,7 +142,6 @@ def run_hallucination_guard(case: Dict[str, Any], mode: str, hub, llm=None) -> T
         tool,
         case.get("params", {}),
         case.get("query", ""),
-        selected_skill=case.get("selected_skill", ""),
     )
     expected = case["expected"]
     passed = (

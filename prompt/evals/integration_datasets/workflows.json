@@ -1,0 +1,386 @@
+{
+  "name": "integration_workflows",
+  "description": "Workflow-level integration cases built from common ERP operation sequences and their natural language expressions.",
+  "tool_catalog": [
+    "query_product",
+    "query_inventory",
+    "query_supplier",
+    "query_order",
+    "create_order",
+    "update_plan",
+    "update_order_status",
+    "resolve_ambiguity",
+    "ask_user_clarification",
+    "ask_user_confirmation",
+    "report_tool_exception"
+  ],
+  "cases": [
+    {
+      "id": "wf_inventory_lookup",
+      "workflow": "库存查询",
+      "natural_language": "查询产品 1001 的当前库存",
+      "expected": {
+        "task_status": "completed",
+        "operation_sequence": [
+          {
+            "tool": "query_product",
+            "params": {
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            }
+          }
+        ],
+        "required_result_facts": ["productName", "quantityInStock"],
+        "final_answer_contains": ["苹果", "100"]
+      },
+      "actual_trace": {
+        "task_status": "completed",
+        "tool_calls": [
+          {
+            "tool": "query_product",
+            "params": {
+              "productId": 1001
+            },
+            "status": "success",
+            "result": {
+              "productId": 1001,
+              "productName": "苹果"
+            }
+          },
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            },
+            "status": "success",
+            "result": {
+              "productId": 1001,
+              "quantityInStock": 100
+            }
+          }
+        ],
+        "used_result_facts": ["productName", "quantityInStock"],
+        "final_answer": "产品苹果当前库存为 100 件。"
+      }
+    },
+    {
+      "id": "wf_create_order_full_params",
+      "workflow": "订单录入",
+      "natural_language": "为产品 1001 创建 20 件订单，交期 2026-06-10，供应商 3",
+      "expected": {
+        "task_status": "completed",
+        "operation_sequence": [
+          {
+            "tool": "query_product",
+            "params": {
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "query_supplier",
+            "params": {
+              "supplierId": 3
+            }
+          },
+          {
+            "tool": "create_order",
+            "requires_confirmation": true,
+            "params": {
+              "productId": 1001,
+              "quantity": 20,
+              "deliveryDate": "2026-06-10",
+              "supplierId": 3
+            }
+          }
+        ],
+        "required_result_facts": ["orderId", "status"],
+        "final_answer_contains": ["O-20260602-001", "已创建"]
+      },
+      "actual_trace": {
+        "task_status": "completed",
+        "tool_calls": [
+          {
+            "tool": "query_product",
+            "params": {
+              "productId": 1001
+            },
+            "status": "success",
+            "result": {
+              "productId": 1001,
+              "productName": "苹果"
+            }
+          },
+          {
+            "tool": "query_supplier",
+            "params": {
+              "supplierId": 3
+            },
+            "status": "success",
+            "result": {
+              "supplierId": 3,
+              "supplierName": "华东供应商"
+            }
+          },
+          {
+            "tool": "create_order",
+            "params": {
+              "productId": 1001,
+              "quantity": 20,
+              "deliveryDate": "2026-06-10",
+              "supplierId": 3
+            },
+            "confirmed": true,
+            "status": "success",
+            "result": {
+              "orderId": "O-20260602-001",
+              "status": "created"
+            }
+          }
+        ],
+        "used_result_facts": ["orderId", "status"],
+        "final_answer": "订单 O-20260602-001 已创建，状态为 created。"
+      }
+    },
+    {
+      "id": "wf_create_order_missing_supplier",
+      "workflow": "参数缺失补全",
+      "natural_language": "为产品 1001 创建 20 件订单，交期 2026-06-10",
+      "expected": {
+        "task_status": "waiting_user",
+        "operation_sequence": [
+          {
+            "tool": "ask_user_clarification",
+            "params": {
+              "missing": ["supplierId"]
+            }
+          }
+        ],
+        "required_result_facts": [],
+        "final_answer_contains": ["供应商", "supplierId"]
+      },
+      "actual_trace": {
+        "task_status": "waiting_user",
+        "tool_calls": [
+          {
+            "tool": "ask_user_clarification",
+            "params": {
+              "missing": ["supplierId"]
+            },
+            "status": "success"
+          }
+        ],
+        "used_result_facts": [],
+        "final_answer": "还需要补充供应商信息 supplierId，才能继续创建订单。"
+      }
+    },
+    {
+      "id": "wf_ambiguous_repeat_order",
+      "workflow": "模糊需求澄清",
+      "natural_language": "照上次方案再下一单，但是数量改成 50",
+      "expected": {
+        "task_status": "waiting_user",
+        "operation_sequence": [
+          {
+            "tool": "resolve_ambiguity",
+            "params": {
+              "ambiguous_term": "上次方案"
+            }
+          },
+          {
+            "tool": "ask_user_confirmation",
+            "params": {
+              "quantity": 50
+            }
+          }
+        ],
+        "required_result_facts": [],
+        "final_answer_contains": ["确认", "50"]
+      },
+      "actual_trace": {
+        "task_status": "waiting_user",
+        "tool_calls": [
+          {
+            "tool": "resolve_ambiguity",
+            "params": {
+              "ambiguous_term": "上次方案"
+            },
+            "status": "success",
+            "result": {
+              "candidate_query": "按上次订单的产品、交期和供应商再下一单，数量改为 50"
+            }
+          },
+          {
+            "tool": "ask_user_confirmation",
+            "params": {
+              "quantity": 50
+            },
+            "status": "success"
+          }
+        ],
+        "used_result_facts": [],
+        "final_answer": "我理解为按上次方案再下一单，并将数量改为 50。请确认是否继续。"
+      }
+    },
+    {
+      "id": "wf_plan_adjustment_multi_tool",
+      "workflow": "多工具生产计划调整",
+      "natural_language": "订单 O-9001 如果库存不足，就查询供应商并调整生产计划",
+      "expected": {
+        "task_status": "completed",
+        "operation_sequence": [
+          {
+            "tool": "query_order",
+            "params": {
+              "orderId": "O-9001"
+            }
+          },
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "query_supplier",
+            "params": {
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "update_plan",
+            "requires_confirmation": true,
+            "params": {
+              "orderId": "O-9001",
+              "planStatus": "adjusted"
+            }
+          }
+        ],
+        "required_result_facts": ["orderId", "planStatus"],
+        "final_answer_contains": ["O-9001", "adjusted"]
+      },
+      "actual_trace": {
+        "task_status": "completed",
+        "tool_calls": [
+          {
+            "tool": "query_order",
+            "params": {
+              "orderId": "O-9001"
+            },
+            "status": "success",
+            "result": {
+              "orderId": "O-9001",
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            },
+            "status": "success",
+            "result": {
+              "productId": 1001,
+              "quantityInStock": 3
+            }
+          },
+          {
+            "tool": "query_supplier",
+            "params": {
+              "productId": 1001
+            },
+            "status": "success",
+            "result": {
+              "supplierId": 3
+            }
+          },
+          {
+            "tool": "update_plan",
+            "params": {
+              "orderId": "O-9001",
+              "planStatus": "adjusted"
+            },
+            "confirmed": true,
+            "status": "success",
+            "result": {
+              "orderId": "O-9001",
+              "planStatus": "adjusted"
+            }
+          }
+        ],
+        "used_result_facts": ["orderId", "planStatus"],
+        "final_answer": "订单 O-9001 的生产计划已调整为 adjusted。"
+      }
+    },
+    {
+      "id": "wf_irrelevant_request_no_tool",
+      "workflow": "无效工具调用拦截",
+      "natural_language": "写一首关于春天的诗",
+      "expected": {
+        "task_status": "rejected",
+        "operation_sequence": [],
+        "required_result_facts": [],
+        "final_answer_contains": ["ERP", "无法"]
+      },
+      "actual_trace": {
+        "task_status": "rejected",
+        "tool_calls": [],
+        "used_result_facts": [],
+        "final_answer": "该请求不属于 ERP 工具能力范围，无法调用业务工具处理。"
+      }
+    },
+    {
+      "id": "wf_inventory_api_exception",
+      "workflow": "工具异常处理",
+      "natural_language": "查询产品 1001 的库存",
+      "expected": {
+        "task_status": "failed_handled",
+        "operation_sequence": [
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            }
+          },
+          {
+            "tool": "report_tool_exception",
+            "params": {
+              "failedTool": "query_inventory"
+            }
+          }
+        ],
+        "exception_expected": true,
+        "required_result_facts": [],
+        "final_answer_contains": ["库存服务", "稍后"]
+      },
+      "actual_trace": {
+        "task_status": "failed_handled",
+        "exception_handled": true,
+        "tool_calls": [
+          {
+            "tool": "query_inventory",
+            "params": {
+              "productId": 1001
+            },
+            "status": "exception",
+            "exception_handled": true,
+            "error": "inventory service timeout"
+          },
+          {
+            "tool": "report_tool_exception",
+            "params": {
+              "failedTool": "query_inventory"
+            },
+            "status": "success"
+          }
+        ],
+        "used_result_facts": [],
+        "final_answer": "库存服务暂时不可用，本次查询没有成功。请稍后重试。"
+      }
+    }
+  ]
+}

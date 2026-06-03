@@ -19,7 +19,7 @@ class HallucinationGuard:
         return "read"
 
     def validate_tool_call(self, tool, params: Dict[str, Any], query: str = "",
-                           selected_skill: str = "", user_permissions: List[str] = None) -> Dict[str, Any]:
+                           user_permissions: List[str] = None) -> Dict[str, Any]:
         risk_level = self.classify_tool_risk(tool)
         violations = []
         param_sources = {}
@@ -49,7 +49,6 @@ class HallucinationGuard:
             "violations": violations,
             "param_sources": param_sources,
             "hallucination_type": "param" if violations else "",
-            "selected_skill": selected_skill,
         }
 
     def check_answer_grounding(self, answer: str, evidences: List[str]) -> Dict[str, Any]:

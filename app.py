@@ -174,8 +174,7 @@ def _run_planning_for_task(task, query, data, curr_model_name, curr_temperature,
                                     curr_temperature, model_top_p, mongo_host, mongo_db, mongo_port, topK,
                                     curr_api_url, curr_api_key, executor)
     if not task.trace_id:
-        trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, query,
-                                            selected_skill=task.selected_skill or "")
+        trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, query)
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, task.system_output or "",
                                          trace_id=trace_id)
     api_planning_hub.apis_planning(query, task.task_id)
