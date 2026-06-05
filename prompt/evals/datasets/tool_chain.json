@@ -17,6 +17,22 @@
       "expected": {
         "steps": ["query_order", "update_status"]
       }
+    },
+    {
+      "id": "chain_bad_conditional_order_inventory_first",
+      "query": "帮我查一下苹果还有多少，如果不够就下 50 件",
+      "model_steps": ["query_product", "query_inventory", "ask_user_confirmation", "create_order"],
+      "expected": {
+        "steps": ["query_product", "query_inventory", "ask_user_confirmation", "create_order"]
+      }
+    },
+    {
+      "id": "chain_regression_simple_inventory_no_order",
+      "query": "查一下苹果库存",
+      "model_steps": ["query_inventory"],
+      "expected": {
+        "steps": ["query_inventory"]
+      }
     }
   ]
 }

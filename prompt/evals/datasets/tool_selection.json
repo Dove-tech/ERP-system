@@ -32,6 +32,26 @@
       ],
       "expected": {"action": "None"},
       "model_output": "{\"action\":\"None\",\"reason\":\"没有候选工具可以写诗\"}"
+    },
+    {
+      "id": "tool_select_bad_conditional_inventory_first",
+      "query": "查询苹果当前库存，后续如果库存不足再下单",
+      "tools": [
+        {"name_for_model": "query_inventory", "name_for_human": "查询库存", "description": "根据产品名称或产品ID查询当前库存数量"},
+        {"name_for_model": "create_order", "name_for_human": "创建订单", "description": "根据产品、数量、交期和供应商创建采购或生产订单"}
+      ],
+      "expected": {"action": "query_inventory"},
+      "model_output": "{\"action\":\"query_inventory\",\"reason\":\"条件式任务必须先查询库存，再决定是否进入下单确认\"}"
+    },
+    {
+      "id": "tool_select_regression_simple_inventory",
+      "query": "查询苹果库存",
+      "tools": [
+        {"name_for_model": "query_inventory", "name_for_human": "查询库存", "description": "根据产品名称或产品ID查询当前库存数量"},
+        {"name_for_model": "create_order", "name_for_human": "创建订单", "description": "根据产品、数量、交期和供应商创建采购或生产订单"}
+      ],
+      "expected": {"action": "query_inventory"},
+      "model_output": "{\"action\":\"query_inventory\",\"reason\":\"用户只是查询库存，不应该触发下单工具\"}"
     }
   ]
 }

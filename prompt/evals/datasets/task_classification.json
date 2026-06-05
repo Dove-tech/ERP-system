@@ -17,6 +17,30 @@
       "expected": {
         "task_type": "multi"
       }
+    },
+    {
+      "id": "tc_bad_conditional_order_requires_multi",
+      "query": "帮我查一下苹果还有多少，如果不够就下 50 件",
+      "model_output": "multi",
+      "expected": {
+        "task_type": "multi"
+      }
+    },
+    {
+      "id": "tc_regression_simple_inventory_stays_single",
+      "query": "查一下苹果库存",
+      "model_output": "single",
+      "expected": {
+        "task_type": "single"
+      }
+    },
+    {
+      "id": "tc_regression_direct_order_stays_single",
+      "query": "给产品 1001 下 50 件订单，交期 2026-06-10，供应商 3",
+      "model_output": "single",
+      "expected": {
+        "task_type": "single"
+      }
     }
   ]
 }

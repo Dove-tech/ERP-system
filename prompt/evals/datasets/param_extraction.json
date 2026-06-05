@@ -37,6 +37,24 @@
         },
         "missing": ["deliveryDate"]
       }
+    },
+    {
+      "id": "pe_bad_missing_supplier_must_not_hallucinate",
+      "query": "给苹果下 50 件订单，交期 2026-06-10",
+      "model_params": {
+        "productName": "苹果",
+        "quantity": 50,
+        "deliveryDate": "2026-06-10"
+      },
+      "model_missing": ["supplierId"],
+      "expected": {
+        "params": {
+          "productName": "苹果",
+          "quantity": 50,
+          "deliveryDate": "2026-06-10"
+        },
+        "missing": ["supplierId"]
+      }
     }
   ]
 }

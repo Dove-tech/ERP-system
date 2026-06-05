@@ -1,0 +1,170 @@
+{
+  "name": "prompt_bad_cases",
+  "description": "Bad cases collected from PM workflow testing, QA exploratory testing, trace replay, and online pilot feedback. These cases are used for prompt evolution, root-cause analysis, and regression protection.",
+  "collection_policy": {
+    "principle": "Do not add prompt rules blindly. First classify the root cause, then decide whether to modify prompt, RAG, schema, parser, guardrail, or workflow logic.",
+    "sources": [
+      "产品经理整理的常见操作序列和自然语言对应表",
+      "测试同学的探索式用例",
+      "TraceRecord 中失败或被用户取消的调用链",
+      "线上试点用户反馈",
+      "模型或 prompt 版本升级后的回归失败"
+    ],
+    "required_fields": [
+      "query",
+      "failure_type",
+      "wrong_behavior",
+      "expected_behavior",
+      "root_cause",
+      "engineering_action",
+      "evals_added"
+    ]
+  },
+  "cases": [
+    {
+      "id": "bc_20251018_conditional_order_skipped_inventory",
+      "discovered_at": "2025-10-18",
+      "source": "PM workflow testing",
+      "query": "帮我查一下苹果还有多少，如果不够就下 50 件",
+      "failure_type": "tool_timing_error",
+      "wrong_behavior": {
+        "trace": ["create_order"],
+        "description": "系统直接进入创建订单确认，跳过了库存查询。"
+      },
+      "expected_behavior": {
+        "trace": ["query_product", "query_inventory", "ask_user_confirmation", "create_order"],
+        "description": "条件式任务必须先查询库存，再根据库存结果和用户确认决定是否下单。"
+      },
+      "root_cause": "任务规划 prompt 没有明确区分条件式多步骤任务和直接写操作，模型把“如果不够就下单”压缩成了一个 create_order 子任务。",
+      "engineering_action": [
+        "在任务分类 prompt 中补充条件式任务边界：包含“如果/不足/不够/满足条件后”等条件动作时，应优先拆成多工具流程。",
+        "在 tool_chain eval 中增加条件式下单 case，要求库存查询先于写操作。",
+        "保留 guardrail 的写操作确认，防止 create_order 被直接执行。"
+      ],
+      "evals_added": [
+        "task_classification:tc_bad_conditional_order_requires_multi",
+        "tool_chain:chain_bad_conditional_order_inventory_first",
+        "tool_selection:tool_select_bad_conditional_inventory_first"
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "bc_20251019_inventory_query_over_split_regression",
+      "discovered_at": "2025-10-19",
+      "source": "Regression eval after prompt change",
+      "query": "查一下苹果库存",
+      "failure_type": "prompt_regression",
+      "wrong_behavior": {
+        "trace": ["query_inventory", "ask_user_confirmation", "create_order"],
+        "description": "修复条件式任务后，模型把普通库存查询也过度拆成下单流程。"
+      },
+      "expected_behavior": {
+        "trace": ["query_inventory"],
+        "description": "单纯库存查询是单工具任务，不应触发订单创建。"
+      },
+      "root_cause": "第一次 prompt 修复把规则写得太宽，将“出现库存”错误泛化为多步骤任务。",
+      "engineering_action": [
+        "增加 negative example：单纯查询库存仍然是单工具任务。",
+        "把 prompt 规则从关键词匹配改成条件动作识别：只有同时存在条件和后续动作才拆成多工具任务。",
+        "将原本正确的库存查询加入回归集，防止后续再次回退。"
+      ],
+      "evals_added": [
+        "task_classification:tc_regression_simple_inventory_stays_single",
+        "tool_chain:chain_regression_simple_inventory_no_order",
+        "tool_selection:tool_select_regression_simple_inventory"
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "bc_20251102_missing_supplier_hallucinated",
+      "discovered_at": "2025-11-02",
+      "source": "QA exploratory testing",
+      "query": "给苹果下 50 件订单，交期 2026-06-10",
+      "failure_type": "parameter_hallucination",
+      "wrong_behavior": {
+        "params": {
+          "productName": "苹果",
+          "quantity": 50,
+          "deliveryDate": "2026-06-10",
+          "supplierId": 3
+        },
+        "description": "用户没有提供供应商，模型根据历史倾向补了 supplierId=3。"
+      },
+      "expected_behavior": {
+        "params": {
+          "productName": "苹果",
+          "quantity": 50,
+          "deliveryDate": "2026-06-10"
+        },
+        "missing": ["supplierId"],
+        "description": "缺少必填供应商时进入澄清，而不是猜测参数。"
+      },
+      "root_cause": "参数抽取 prompt 对“只能抽取用户原文或已确认上下文中的事实”约束不足，且后端需要用 missing_params 分流兜底。",
+      "engineering_action": [
+        "在参数抽取 eval 中加入 supplierId 缺失 case。",
+        "通过后端参数校验将 supplierId 留空转入 missing_params_clarify。",
+        "禁止将未确认长期偏好直接作为写操作参数。"
+      ],
+      "evals_added": [
+        "param_extraction:pe_bad_missing_supplier_must_not_hallucinate"
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "bc_20251114_confirm_with_param_change",
+      "discovered_at": "2025-11-14",
+      "source": "HITL feedback trace",
+      "query": "可以，但数量改成 50，供应商换成 2",
+      "failure_type": "human_feedback_intent_error",
+      "wrong_behavior": {
+        "intent": "confirm",
+        "description": "系统把用户反馈识别为纯确认，丢掉了数量和供应商变更。"
+      },
+      "expected_behavior": {
+        "intent": "provide_info",
+        "filled_params": {
+          "quantity": 50,
+          "supplierId": 2
+        },
+        "description": "用户既确认方向又修改参数，必须重新合并参数并再次确认。"
+      },
+      "root_cause": "旧的关键词规则只要看到“可以”就短路为 confirm，没有进入场景化 LLM 解析。",
+      "engineering_action": [
+        "将短回复确认和混合反馈分开处理。",
+        "新增 slot_filling_intent 和 ambiguity_feedback_intent prompt。",
+        "把混合反馈 case 放入 replay eval。"
+      ],
+      "evals_added": [
+        "slot_filling_intent:slot_update_existing_and_fill_missing",
+        "ambiguity_feedback_intent:ambiguity_provide_info"
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "bc_20251203_poem_wrong_tool",
+      "discovered_at": "2025-12-03",
+      "source": "Out-of-scope testing",
+      "query": "写一首关于春天的诗",
+      "failure_type": "invalid_tool_call",
+      "wrong_behavior": {
+        "trace": ["query_product"],
+        "description": "系统将普通创作请求错误匹配到产品查询工具。"
+      },
+      "expected_behavior": {
+        "trace": [],
+        "description": "工具模式下应拒绝调用 ERP 工具，提示不属于 ERP 工具能力范围。"
+      },
+      "root_cause": "工具选择 prompt 缺少 none-of-the-above 约束，RAG 候选集中只要有工具就倾向选择一个。",
+      "engineering_action": [
+        "在工具选择 prompt 中要求无合适工具时输出 None。",
+        "在 tool_selection eval 和 integration eval 中加入 out-of-scope case。",
+        "将 invalid_tool_call_rate 作为集成测试指标。"
+      ],
+      "evals_added": [
+        "tool_selection:tool_select_003",
+        "integration:wf_irrelevant_request_no_tool"
+      ],
+      "status": "fixed"
+    }
+  ]
+}

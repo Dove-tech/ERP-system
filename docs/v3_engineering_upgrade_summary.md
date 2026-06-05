@@ -221,6 +221,13 @@ test/test_integration/test_workflow_metrics.py
 docs/integration_testing.md
 ```
 
+新增 prompt 演进与 bad case 回归说明：
+
+```text
+prompt/evals/bad_cases/prompt_bad_cases.json
+docs/prompt_eval_badcase_strategy.md
+```
+
 保留原有数据集：
 
 ```text
@@ -235,6 +242,8 @@ tool_summary.json
 - 新增任务分类、参数抽取、幻觉护栏、模糊需求澄清、多工具链路评测。
 - replay 模式不依赖在线模型，适合作为面试演示和回归验证。
 - 新增集成测试 runner，用产品经理整理的“自然语言 -> 标准操作序列”回放 actual trace，计算工具调用准确率、参数正确率、调用时机合理性、无效工具调用占比、工具执行结果利用率、工具异常处理成功率、任务完成度和任务准确率。
+- 新增 prompt bad case 台账，用于记录失败来源、错误 trace、期望 trace、根因归类、工程处理动作和补充到哪些 eval 数据集。
+- 将“条件式库存不足再下单”“普通库存查询不能过度拆分”“缺少供应商不能硬猜”等 bad case 补入 replay 数据集，防止修复一个 case 后导致原有正确 case 回退。
 
 验证命令：
 
@@ -251,11 +260,11 @@ ambiguity_feedback_intent: 4/4
 ambiguity_resolution: 3/3
 hallucination_guard: 3/3
 human_feedback_intent: 6/6
-param_extraction: 2/2
+param_extraction: 3/3
 slot_filling_intent: 4/4
-task_classification: 2/2
-tool_chain: 2/2
-tool_selection: 3/3
+task_classification: 5/5
+tool_chain: 4/4
+tool_selection: 5/5
 tool_summary: 2/2
 integration_workflows: 7/7
 ```
@@ -270,6 +279,8 @@ docs/integration_testing.md
 `docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、模糊需求反馈识别、pending_action 分流和新增 eval 覆盖。
 
 `docs/integration_testing.md` 专门描述工作流级集成测试，包括 case 数据结构、执行命令和各项指标的计算方式。
+
+`docs/prompt_eval_badcase_strategy.md` 专门描述 prompt 评测如何体现版本演进、bad case 如何搜集与归因、如何通过正反例和回归集避免 prompt 过拟合。
 
 ## 9. 成本与速度
 
