@@ -5,6 +5,7 @@ model_profiles:
       tool_summary: v1
       human_feedback_intent: v1
       slot_filling_intent: v1
+      conversation_summary_compaction: v1
 
   deepseek:
     prompt_versions:
@@ -12,6 +13,7 @@ model_profiles:
       tool_summary: v1
       human_feedback_intent: v1
       slot_filling_intent: v1
+      conversation_summary_compaction: v1
 
   qwen:
     prompt_versions:
@@ -19,3 +21,4 @@ model_profiles:
       tool_summary: v1
       human_feedback_intent: v1-qwen
       slot_filling_intent: v1
+      conversation_summary_compaction: v1

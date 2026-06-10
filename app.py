@@ -164,8 +164,34 @@ def _persist_assistant_memory(task, query, system_output):
         return
     memoryManager.add_message(task.user_id, task.session_id, "assistant", system_output or "",
                               task_id=task.task_id, message_type="system_output")
-    contextManager.update_after_turn(task.user_id, task.session_id, task.raw_query,
-                                     system_output or "")
+    summarizer = _build_conversation_summary_summarizer()
+    summary_state = contextManager.update_after_turn(task.user_id, task.session_id, task.raw_query,
+                                                     system_output or "",
+                                                     summarizer=summarizer)
+    if getattr(task, "trace_id", "") and summary_state:
+        traceManager.add_event(task.trace_id, "summary_compacted", {
+            "changed": summary_state.get("changed", False),
+            "compacted_message_count": summary_state.get("compacted_message_count", 0),
+            "recent_window": summary_state.get("recent_window", 0),
+            "total_messages": summary_state.get("total_messages", 0),
+            "fallback_used": summary_state.get("fallback_used", False),
+            "compacted_message_delta": summary_state.get("compacted_message_delta", 0),
+        })
+
+
+def _build_conversation_summary_summarizer():
+    def summarize(old_summary, messages, max_summary_chars):
+        compact_messages = json.dumps(messages or [], ensure_ascii=False, indent=2)
+        prompt = promptRegistry.render("conversation_summary_compaction", model_name, {
+            "old_summary": old_summary or "",
+            "messages": compact_messages,
+            "max_summary_chars": max_summary_chars,
+        })
+        llm = LargeLanguageModel(model_base_url, model_api_key)
+        output = llm.chat_completions(prompt, model_name, model_temperature, model_top_p)
+        return (output or "").strip()
+
+    return summarize
 
 
 def _run_planning_for_task(task, query, data, curr_model_name, curr_temperature,
@@ -1139,7 +1165,14 @@ def process_init_task(task:Task, data):
         llm = LargeLanguageModel(curr_api_url, curr_api_key)
         try:
             if isContext:
-                results = llm.context_chat_completions(contexts, curr_model_name, curr_temperature, model_top_p, contextNumber)
+                chat_contexts = contexts or context_state.get("recent_messages", [])
+                results = llm.context_chat_completions(
+                    chat_contexts,
+                    curr_model_name,
+                    curr_temperature,
+                    model_top_p,
+                    context_state.get("recent_window", contextNumber),
+                )
             else:
                 results = llm.chat_completions(query, curr_model_name, curr_temperature,model_top_p)
         except:
@@ -1159,11 +1192,10 @@ def process_init_task(task:Task, data):
         generate_task_hub = GenerateTaskHub(curr_model_name, curr_temperature, model_top_p,
                                             curr_api_url, curr_api_key, mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         if isContext:
-            if len(contexts) < contextNumber:
-                target_contexts = contexts
-            else:
-                target_contexts = contexts[len(contexts) - contextNumber:len(contexts)]
-            target_query = generate_task_hub.gen_context_request_task(target_contexts)
+            context_window = context_state.get("recent_window", contextNumber)
+            source_contexts = contexts or context_state.get("recent_messages", [])
+            target_contexts = source_contexts[-context_window:] if source_contexts else []
+            target_query = generate_task_hub.gen_context_request_task(target_contexts) if target_contexts else query
         else:
             target_query = query
         rewrite_grounding = contextManager.validate_query_grounding(target_query, context_state)

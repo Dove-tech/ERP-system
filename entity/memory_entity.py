@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from mongoengine import DateTimeField, DictField, Document, ListField, StringField
+from mongoengine import DateTimeField, DictField, Document, IntField, ListField, StringField
 
 
 class SessionMemory(Document):
@@ -27,6 +27,9 @@ class SummaryMemory(Document):
     user_id = StringField(required=True)
     session_id = StringField(required=True)
     summary = StringField(default="")
+    compacted_message_count = IntField(default=0)
+    recent_window = IntField(default=6)
+    max_summary_chars = IntField(default=2000)
     updated_at = DateTimeField(default=datetime.utcnow)
 
     meta = {

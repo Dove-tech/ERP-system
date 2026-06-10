@@ -70,9 +70,11 @@ app.py
 
 - `Task` 增加 `user_id`、`session_id`、`tenant_id`。
 - 短期记忆 `SessionMemory` 按 `user_id + session_id` 隔离。
-- 摘要记忆 `SummaryMemory` 存储 session 级 rolling summary。
+- 摘要记忆 `SummaryMemory` 存储 session 级 conversation summary，并记录 `compacted_message_count`、`recent_window`、`max_summary_chars`。
 - `/api_planning` 支持请求中传入 `sessionId/session_id/conversationId`，未传时自动生成新 session。
-- 新建任务会写入用户消息，任务结束后写入系统输出和摘要。
+- 新建任务会写入用户消息，任务结束后写入系统输出，并把掉出 recent window 的旧消息通过 LLM compact 到 summary。
+- LLM summary 失败或返回空时，会降级到规则式 extractive fallback，避免影响主流程。
+- summary compact 后会写入 `summary_compacted` trace event，包含 `fallback_used` 和 `compacted_message_delta`，便于评测是否触发压缩以及是否走了降级。
 
 设计取舍：
 
@@ -94,7 +96,10 @@ app.py
 
 - `ContextManager` 不直接把历史全部塞入 prompt，而是构造 bounded context。
 - 上下文由 `current_query`、`recent_messages`、`summary` 组成。
+- `recent_messages` 至少保留最近 6 条原始消息，避免前端 `contextNumber` 过小导致上下文立即丢失。
+- 如果前端没有传 `contexts`，工具模式会使用后端按 `user_id + session_id` 读取出的 recent messages 作为上下文改写输入。
 - Copilot 模式会把前端上下文和 session summary 组合成新的 `target_query`，再进入原有 API planning。
+- summary 更新使用 `prompt/prompt_registry/conversation_summary_compaction/v1.yaml`，只输出自然语言 conversation summary，不输出复杂 facts 结构。
 - 新增 `target_query` grounding 校验：从改写后的请求中抽取产品、订单、数量、交期、区域、生产线、供应商等关键实体，要求它们必须能在当前 query、recent messages 或会话摘要中找到来源。
 - 如果关键实体缺少来源，任务不会继续进入 API planning，而是写入 `pending_action=rewrite_grounding_clarify`，进入澄清/确认流程；用户确认后按候选改写继续，用户补充信息时按补充后的请求继续。
 

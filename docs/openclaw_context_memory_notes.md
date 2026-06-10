@@ -376,6 +376,27 @@ current_query
 + conversation_summary
 ```
 
+当前代码已经按这个结构落地：
+
+```text
+完整历史：SessionMemory 按 user_id + session_id 持久化保存
+最近窗口：ContextManager 至少保留最近 6 条原始消息
+压缩摘要：LLM summarizer 把掉出最近窗口的旧消息压缩进 SummaryMemory
+压缩进度：compacted_message_count 记录已经压缩到哪一条消息
+链路追踪：任务结束后写入 summary_compacted trace event
+```
+
+当前实现使用 LLM abstractive compaction 作为主路径：
+
+```text
+旧 conversation_summary
++ 掉出 recent window 的较早消息
++ compaction prompt
+-> 新 conversation_summary
+```
+
+如果 LLM summarizer 调用失败或返回空，会降级为确定性 extractive fallback，把旧摘要和旧消息简化拼接后截断。fallback 的作用是保证主流程可用，不是最终形态。无论主路径还是 fallback，都不改变核心约束：summary 只提供背景理解，不直接作为工具参数来源。
+
 summary 的作用是：
 
 - 帮助模型知道前面聊过什么。

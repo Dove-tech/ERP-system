@@ -172,7 +172,10 @@ guardrail_blocked
 tool_invocation_started
 tool_invocation_finished
 answer_grounding_checked
+summary_compacted
 ```
+
+`summary_compacted` 用于记录 OpenClaw Compaction 风格的会话压缩是否发生，包含 `changed`、`compacted_message_count`、`recent_window`、`total_messages`、`compacted_message_delta`、`fallback_used` 等字段。正式评测工具调用准确率时不一定每条 case 都检查它，但在多会话、长上下文、刷新恢复这类 case 中，它可以用来验证后端是否把掉出最近窗口的旧消息压缩进 `conversation_summary`，以及 LLM summarizer 是否发生降级。
 
 runner 会把这些事件整理成统一结构：
 

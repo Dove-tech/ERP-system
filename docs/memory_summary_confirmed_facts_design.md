@@ -22,6 +22,79 @@
 
 这个设计更接近 OpenClaw 的 Compaction 思路：保留完整历史，压缩较早上下文，最近消息仍然原文进入模型。
 
+## 0. 当前代码落地
+
+当前工程已经把 summary 从“每轮覆盖最近目标”改成 OpenClaw Compaction 风格的会话压缩。
+
+代码位置：
+
+```text
+entity/memory_entity.py
+memory/memory_manager.py
+memory/context_manager.py
+app.py
+```
+
+当前实现方式：
+
+```text
+1. 所有用户和系统可见消息仍然完整写入 SessionMemory。
+2. ContextManager 每次构造上下文时，至少保留最近 6 条原始消息。
+3. 当 session 消息数超过 recent_window 时，MemoryManager 把掉出最近窗口的旧消息合并进 SummaryMemory.summary。
+4. SummaryMemory 记录 compacted_message_count、recent_window、max_summary_chars。
+5. 主路径调用 LLM summarizer，把旧 summary 和掉出窗口的消息压缩成新的 conversation_summary。
+6. 如果 LLM 调用失败或返回空，降级到规则式 extractive fallback，保证主流程不中断。
+7. 任务结束后写入 summary_compacted trace event，方便后续评测和排查。
+```
+
+当前压缩输入是：
+
+```text
+旧 conversation_summary
++ 新掉出 recent window 的较早消息
+-> 新 conversation_summary
+```
+
+当前压缩输出是自然语言摘要，不输出 JSON facts，不维护 `pinned_facts`、`entities`、`relations` 等复杂状态。
+
+触发时机：
+
+```text
+任务最终回答写入 SessionMemory 后
+-> ContextManager.update_after_turn
+-> MemoryManager.compact_session_summary
+-> 如果 total_messages - recent_window > compacted_message_count，则触发压缩
+```
+
+也就是说，不是每来一条消息都调用 LLM，而是只有存在“已经掉出最近窗口、且还没有压缩过”的旧消息时才压缩。这样能降低调用成本，也能避免 summary 频繁漂移。
+
+当前 LLM prompt 位于：
+
+```text
+prompt/prompt_registry/conversation_summary_compaction/v1.yaml
+```
+
+prompt 约束：
+
+```text
+保留任务背景、已完成步骤、未完成事项、用户明确约束、HITL 状态和必要工具结果。
+删除寒暄、重复内容和无关解释。
+不编造输入中没有的信息。
+不把临时参数写成长期偏好。
+不声称用户已确认，除非输入中明确出现确认。
+summary 只作为上下文背景，不是工具参数事实库。
+```
+
+失败处理：
+
+```text
+LLM summarizer 成功 -> 使用 LLM conversation_summary
+LLM summarizer 失败或返回空 -> 使用 deterministic extractive fallback
+无新增待压缩消息 -> 不更新 summary
+```
+
+fallback 的作用不是追求最佳摘要，而是保证系统不会因为 summarizer 异常影响工具调用主流程。
+
 ## 1. 为什么要简化
 
 之前讨论过一种较复杂的方案：
@@ -820,10 +893,12 @@ summary 不会把“苹果”错误理解成水果并干扰工具调用。
 第二步：实现 conversation_summary。
 
 ```text
-当消息数或 token 数超过阈值时，调用 LLM 压缩较早历史。
+当消息数或 token 数超过阈值时，压缩较早历史。
 只输出自然语言摘要。
 不输出复杂 JSON facts。
 ```
+
+当前代码采用 LLM summarizer 作为主路径，并保留确定性 extractive fallback。
 
 第三步：构造 prompt。
 
