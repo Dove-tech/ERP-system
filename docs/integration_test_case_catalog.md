@@ -293,43 +293,23 @@ parameter_accuracy
 unsafe_execution_rate
 ```
 
-### HC-08 模糊需求，有可靠上下文时先给候选方案
+### HC-08 已移除：模糊需求候选生成
 
-通俗场景：用户说“照上次方案再下一单”，系统需要基于 session memory 或 pinned facts 给出候选方案，让用户确认。
+当前版本已从正式集成测试中移除该类 case。
 
-示例输入：
+原始设想是：用户说“照上次方案再下一单”，系统基于长期记忆或关键事实给出候选方案，再让用户确认。
+
+删除原因：
 
 ```text
-照上次方案再下一单，但是数量改成 50
+当前版本已删除长期记忆、pinned facts 和 ambiguity resolver。
+没有可靠长期记忆来源时，继续保留该 case 会让评测目标和工程能力不一致。
 ```
 
-预期流程：
+后续如果重新引入，应作为长期记忆能力的未来展望重新设计：
 
 ```text
-resolve_ambiguity -> ask_user_confirmation -> create_order
-```
-
-虚拟用户反馈：
-
-```text
-确认，按这个方案继续
-立即执行
-```
-
-测试重点：
-
-- 是否识别“上次方案”为模糊表达。
-- 是否基于已有上下文生成候选方案。
-- 候选方案是否有来源证据。
-- 用户确认后才进入工具规划。
-
-主要指标：
-
-```text
-ambiguity_detection_accuracy
-grounded_rewrite_rate
-hitl_response_handling_accuracy
-task_completion_rate
+long_term_memory -> ambiguity_candidate -> user_confirmation -> tool_planning
 ```
 
 ### HC-09 多轮上下文追问
@@ -746,7 +726,7 @@ task_completion_rate
 预期流程：
 
 ```text
-ambiguity_confirm_or_missing_context
+missing_params_clarify_or_reject
 ```
 
 测试重点：
@@ -758,9 +738,8 @@ ambiguity_confirm_or_missing_context
 主要指标：
 
 ```text
-ambiguity_detection_accuracy
 grounded_rewrite_rate
-memory_hallucination_rate
+invalid_tool_call_rate
 unsafe_execution_rate
 ```
 
@@ -1039,14 +1018,15 @@ wf_create_order_full_params
 wf_create_order_missing_supplier
 ```
 
-### RF-04 模糊需求澄清
+### RF-04 已移除：模糊需求澄清
 
-场景：验证“照上次方案”这类模糊请求应进入候选确认。
+场景：原本用于验证“照上次方案”这类模糊请求应进入候选确认。
 
-原 case：
+当前状态：
 
 ```text
-wf_ambiguous_repeat_order
+已从 prompt/evals/integration_datasets/workflows.json 删除。
+长期记忆和 ambiguity resolver 重新引入前，不作为正式回归 case。
 ```
 
 ### RF-05 多工具生产计划调整
@@ -1115,4 +1095,4 @@ HITL 改参数
 
 可以这样讲：
 
-> 我们把在线集成测试的数据集设计成只包含用户输入、标准 workflow、虚拟用户反馈和预期最终结果，不手写 actual trace。runner 会真实调用后端接口，遇到 HITL 状态时校验当前确认点的工具和参数，再自动提交确认、取消、补参数或修改参数等反馈。任务完成后从 TraceRecord 拉取真实执行轨迹，归一化为 actual_trace，再和 expected 比较。case 覆盖单工具查询、写操作确认、多工具依赖、缺参补充、HITL 改参数、模糊需求、非业务请求、工具异常、循环调用和安全拦截等场景。
+> 我们把在线集成测试的数据集设计成只包含用户输入、标准 workflow、虚拟用户反馈和预期最终结果，不手写 actual trace。runner 会真实调用后端接口，遇到 HITL 状态时校验当前确认点的工具和参数，再自动提交确认、取消、补参数或修改参数等反馈。任务完成后从 TraceRecord 拉取真实执行轨迹，归一化为 actual_trace，再和 expected 比较。case 覆盖单工具查询、写操作确认、多工具依赖、缺参补充、HITL 改参数、上下文改写澄清、非业务请求、工具异常、循环调用和安全拦截等场景。

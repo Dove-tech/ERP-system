@@ -7,10 +7,11 @@ from flask import Flask, jsonify, request, g
 from flasgger import Swagger
 from apis.api_planning_hub import ApiPlanningHub
 from entity import Parameter, Tool, Task
-from memory import AmbiguityResolver, ContextManager, MemoryManager
+from memory import ContextManager, MemoryManager
 from tasks import GenerateTaskHub
 from models import LargeLanguageModel
 from prompt.prompt_engineering import PromptRegistry, StructuredOutputParser
+from permissions import build_operator_context
 from tools.tool_manager import ToolManager
 from tasks import TaskManager
 from trace import TraceManager
@@ -81,7 +82,6 @@ toolManager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_d
 taskManager = TaskManager(mongo_host, mongo_db, mongo_port)
 memoryManager = MemoryManager(mongo_host, mongo_db, mongo_port)
 contextManager = ContextManager(memoryManager)
-ambiguityResolver = AmbiguityResolver(memoryManager)
 traceManager = TraceManager(mongo_host, mongo_db, mongo_port)
 promptRegistry = PromptRegistry()
 
@@ -99,8 +99,12 @@ def _current_user_context(data):
         or str(uuid.uuid4())
     )
     tenant_id = str(data.get("tenantId") or data.get("tenant_id") or "internal")
-    memory_scope = str(data.get("memoryScope") or data.get("memory_scope") or "erp")
-    return user_id, session_id, tenant_id, memory_scope
+    return user_id, session_id, tenant_id
+
+
+def _current_operator_context(data):
+    current_user = getattr(g, "current_user", {}) or {}
+    return build_operator_context(current_user, data).to_dict()
 
 
 def _is_confirm_feedback(text):
@@ -160,12 +164,8 @@ def _persist_assistant_memory(task, query, system_output):
         return
     memoryManager.add_message(task.user_id, task.session_id, "assistant", system_output or "",
                               task_id=task.task_id, message_type="system_output")
-    pinned_facts = memoryManager.extract_pinned_facts(query or task.raw_query, task.curr_tool_param or {})
-    merged_facts = {}
-    merged_facts.update(task.pinned_facts or {})
-    merged_facts.update(pinned_facts)
     contextManager.update_after_turn(task.user_id, task.session_id, task.raw_query,
-                                     system_output or "", pinned_facts=merged_facts)
+                                     system_output or "")
 
 
 def _run_planning_for_task(task, query, data, curr_model_name, curr_temperature,
@@ -626,6 +626,10 @@ def login():
             'user_id': user.user_id,
             'username': user.userName,
             'user_authority': user.user_authority,
+            'roles': list(getattr(user, "roles", []) or []),
+            'tool_permissions': list(getattr(user, "tool_permissions", []) or []),
+            'allowed_regions': list(getattr(user, "allowed_regions", []) or []),
+            'data_scope': dict(getattr(user, "data_scope", {}) or {}),
             'exp': datetime.utcnow() + JWT_EXPIRATION_DELTA
         }, SECRET_KEY, algorithm=JWT_ALGORITHM)
 
@@ -635,7 +639,11 @@ def login():
         session_cache[access_token] = {
             'user_id': user.user_id,
             'username': user.userName,
-            'user_authority': user.user_authority
+            'user_authority': user.user_authority,
+            'roles': list(getattr(user, "roles", []) or []),
+            'tool_permissions': list(getattr(user, "tool_permissions", []) or []),
+            'allowed_regions': list(getattr(user, "allowed_regions", []) or []),
+            'data_scope': dict(getattr(user, "data_scope", {}) or {}),
         }
 
         logger.info(f"用户访问令牌: {access_token}已存入本地缓存")
@@ -882,13 +890,14 @@ def mesh_query():
             return jsonify({'task_id': task_id})
         else:
             # 处理新的查询请求
-            user_id, session_id, tenant_id, memory_scope = _current_user_context(data)
+            user_id, session_id, tenant_id = _current_user_context(data)
+            operator_context = _current_operator_context(data)
             task = taskManager.create_task(
                 data["query"],
                 user_id=user_id,
                 session_id=session_id,
                 tenant_id=tenant_id,
-                memory_scope=memory_scope,
+                operator_context=operator_context,
             )
             logger.info(f"新任务[{task.task_id}]开始处理.....")
             trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, data["query"])
@@ -897,79 +906,6 @@ def mesh_query():
             executor.submit(process_init_task, task, data)  # 将任务提交到线程池
             # threading.Thread(target=process_task, args=(task_id, data)).start()
             return jsonify({'task_id': task.task_id, 'session_id': task.session_id, 'trace_id': task.trace_id})
-
-
-def _handle_pending_ambiguity(task, human_feedback):
-    if task.pending_action != "ambiguity_confirm":
-        return False
-
-    payload = task.pending_payload or {}
-    feedback_result = _parse_ambiguity_feedback(payload, human_feedback)
-    intent = feedback_result.get("intent", "unclear")
-
-    if intent == "abort":
-        taskManager.update_task_recorder(task.task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+"已取消模糊需求执行",
-                                        graph_title="任务已取消", pending_action="", pending_payload={})
-        traceManager.add_event(task.trace_id, "ambiguity_aborted", {"feedback": human_feedback})
-        traceManager.finish_trace(task.trace_id, "用户取消模糊需求执行", status="aborted")
-        return True
-
-    if intent == "confirm_candidate" and payload.get("resolved_query"):
-        target_query = payload["resolved_query"]
-        resolution_type = "confirmed_candidate"
-    elif intent == "provide_info":
-        original_query = payload.get("original_query") or task.raw_query
-        target_query = feedback_result.get("revised_query") or f"{original_query}\n用户补充：{human_feedback}"
-        resolution_type = "user_clarified"
-    else:
-        taskManager.update_task_recorder(
-            task.task_id,
-            TASK_STATUS_WAIT_CONFIRM,
-            "我还不能确定您的意思。请确认是否按候选方案继续，或直接补充正确的产品、订单、数量、交期、供应商等信息；也可以回复“取消”。",
-            graph_title="等待模糊需求确认",
-            pending_action="ambiguity_confirm",
-            pending_payload=payload,
-        )
-        traceManager.add_event(task.trace_id, "ambiguity_feedback_unclear", {
-            "feedback": human_feedback,
-            "parse": feedback_result,
-        })
-        return True
-
-    memoryManager.add_message(task.user_id, task.session_id, "user", human_feedback,
-                              task_id=task.task_id, message_type="ambiguity_feedback")
-    traceManager.add_event(task.trace_id, "ambiguity_resolved", {
-        "resolution_type": resolution_type,
-        "feedback": human_feedback,
-        "target_query": target_query,
-    })
-    taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "模糊需求已确认，继续进行 ERP 任务规划...",
-                                    changed_query=target_query, pending_action="", pending_payload={})
-    refreshed_task = taskManager.get_task_by_id(task.task_id)
-    _run_planning_for_task(refreshed_task, target_query, {}, model_name, model_temperature,
-                           model_base_url, model_api_key)
-    return True
-
-
-def _parse_ambiguity_feedback(payload, human_feedback):
-    direct_intent = _direct_control_intent(human_feedback)
-    if direct_intent == "abort":
-        return {"intent": "abort", "confidence": 1.0, "reason": "keyword abort"}
-    if direct_intent == "confirm":
-        return {"intent": "confirm_candidate", "confidence": 1.0, "reason": "keyword confirm"}
-
-    prompt = promptRegistry.render("ambiguity_feedback_intent", model_name, {
-        "original_query": payload.get("original_query", ""),
-        "candidate": json.dumps(payload.get("candidate", {}), ensure_ascii=False),
-        "user_feedback": human_feedback,
-    })
-    try:
-        llm = LargeLanguageModel(model_base_url, model_api_key)
-        output = llm.chat_completions(prompt, model_name, model_temperature, model_top_p)
-        return StructuredOutputParser.parse_ambiguity_feedback_intent(output)
-    except Exception as exc:
-        logger.error(f"解析模糊需求反馈失败: {exc}\n{traceback.format_exc()}")
-        return {"intent": "unclear", "confidence": 0.0, "reason": "parse failed"}
 
 
 def _handle_pending_missing_params(task, human_feedback):
@@ -1133,9 +1069,6 @@ def process_human_feedback(task_id, human_feedback):
         if _handle_pending_rewrite_grounding(task, human_feedback):
             return
 
-        if _handle_pending_ambiguity(task, human_feedback):
-            return
-
         # 更新任务状态为正在处理
         taskManager.update_task_recorder(task_id, TASK_STATUS_RUNNING, "正在处理您的选择")
 
@@ -1178,13 +1111,11 @@ def process_init_task(task:Task, data):
             query,
             contexts=contexts,
             context_number=contextNumber,
-            memory_scope=task.memory_scope or "erp",
         )
         if not task.trace_id:
             trace_id = traceManager.start_trace(task.task_id, task.user_id, task.session_id, query)
             taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务上下文初始化完成",
                                             trace_id=trace_id,
-                                            pinned_facts=context_state.get("pinned_facts", {}),
                                             context_summary=context_state.get("summary", ""))
             task = taskManager.get_task_by_id(task.task_id)
 
@@ -1223,32 +1154,6 @@ def process_init_task(task:Task, data):
     else:
         logger.info(f"Task[{task.task_id}] started successfully, Go on ===>")
 
-    ambiguity_llm = LargeLanguageModel(curr_api_url, curr_api_key) if ambiguityResolver.is_ambiguous(query) else None
-    ambiguity_result = ambiguityResolver.resolve(query, task.user_id, task.session_id, task.memory_scope or "erp",
-                                                context_state=context_state,
-                                                llm=ambiguity_llm,
-                                                model=curr_model_name,
-                                                temperature=curr_temperature,
-                                                top_p=model_top_p)
-    if ambiguity_result.get("is_ambiguous"):
-        traceManager.add_event(task.trace_id, "ambiguity_detected", ambiguity_result)
-        pending_payload = {
-            "original_query": query,
-            "resolved_query": ambiguity_result.get("resolved_query", ""),
-            "candidate": ambiguity_result.get("candidate", {}),
-            "confidence": ambiguity_result.get("confidence", 0),
-            "llm_used": ambiguity_result.get("llm_used", False),
-            "grounding": ambiguity_result.get("grounding", {}),
-        }
-        taskManager.update_task_recorder(task.task_id, TASK_STATUS_WAIT_CONFIRM,
-                                        ambiguity_result.get("message", "请确认模糊需求后继续执行"),
-                                        graph_title="等待模糊需求确认",
-                                        pending_action="ambiguity_confirm",
-                                        pending_payload=pending_payload,
-                                        pinned_facts=context_state.get("pinned_facts", {}),
-                                        context_summary=context_state.get("summary", ""))
-        return
-
     try:
 
         generate_task_hub = GenerateTaskHub(curr_model_name, curr_temperature, model_top_p,
@@ -1277,11 +1182,10 @@ def process_init_task(task:Task, data):
             taskManager.update_task_recorder(
                 task.task_id,
                 TASK_STATUS_WAIT_CONFIRM,
-                f"为了确认我对上下文的理解是否准确，我发现当前理解出的请求里有些关键信息没有在现有对话、已确认信息或记忆中找到来源：{unsupported_text}。请确认是否按这个理解继续，或直接补充正确的产品、订单、数量、交期、供应商等信息。",
+                f"为了确认我对上下文的理解是否准确，我发现当前理解出的请求里有些关键信息没有在现有对话或会话摘要中找到来源：{unsupported_text}。请确认是否按这个理解继续，或直接补充正确的产品、订单、数量、交期、供应商等信息。",
                 graph_title="等待请求澄清",
                 pending_action="rewrite_grounding_clarify",
                 pending_payload=pending_payload,
-                pinned_facts=context_state.get("pinned_facts", {}),
                 context_summary=context_state.get("summary", ""),
             )
             return
@@ -1293,7 +1197,6 @@ def process_init_task(task:Task, data):
 
         taskManager.update_task_recorder(task.task_id, TASK_STATUS_RUNNING, "任务开始处理....",
                                         changed_query=target_query,
-                                        pinned_facts=context_state.get("pinned_facts", {}),
                                         context_summary=context_state.get("summary", ""))
         # 任务开始实际执行
         refreshed_task = taskManager.get_task_by_id(task.task_id)

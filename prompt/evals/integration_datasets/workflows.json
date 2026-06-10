@@ -9,7 +9,6 @@
     "create_order",
     "update_plan",
     "update_order_status",
-    "resolve_ambiguity",
     "ask_user_clarification",
     "ask_user_confirmation",
     "report_tool_exception"
@@ -176,54 +175,6 @@
         ],
         "used_result_facts": [],
         "final_answer": "还需要补充供应商信息 supplierId，才能继续创建订单。"
-      }
-    },
-    {
-      "id": "wf_ambiguous_repeat_order",
-      "workflow": "模糊需求澄清",
-      "natural_language": "照上次方案再下一单，但是数量改成 50",
-      "expected": {
-        "task_status": "waiting_user",
-        "operation_sequence": [
-          {
-            "tool": "resolve_ambiguity",
-            "params": {
-              "ambiguous_term": "上次方案"
-            }
-          },
-          {
-            "tool": "ask_user_confirmation",
-            "params": {
-              "quantity": 50
-            }
-          }
-        ],
-        "required_result_facts": [],
-        "final_answer_contains": ["确认", "50"]
-      },
-      "actual_trace": {
-        "task_status": "waiting_user",
-        "tool_calls": [
-          {
-            "tool": "resolve_ambiguity",
-            "params": {
-              "ambiguous_term": "上次方案"
-            },
-            "status": "success",
-            "result": {
-              "candidate_query": "按上次订单的产品、交期和供应商再下一单，数量改为 50"
-            }
-          },
-          {
-            "tool": "ask_user_confirmation",
-            "params": {
-              "quantity": 50
-            },
-            "status": "success"
-          }
-        ],
-        "used_result_facts": [],
-        "final_answer": "我理解为按上次方案再下一单，并将数量改为 50。请确认是否继续。"
       }
     },
     {

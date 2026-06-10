@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from mongoengine import DateTimeField, DictField, Document, FloatField, ListField, StringField
+from mongoengine import DateTimeField, DictField, Document, ListField, StringField
 
 
 class SessionMemory(Document):
@@ -27,30 +27,11 @@ class SummaryMemory(Document):
     user_id = StringField(required=True)
     session_id = StringField(required=True)
     summary = StringField(default="")
-    pinned_facts = DictField()
     updated_at = DateTimeField(default=datetime.utcnow)
 
     meta = {
         "collection": "summary_memories",
         "indexes": ["user_id", "session_id", "updated_at"],
-    }
-
-
-class LongTermMemory(Document):
-    """Scoped long-term business preference memory."""
-
-    user_id = StringField(required=True)
-    memory_scope = StringField(default="erp")
-    key = StringField(required=True)
-    value = DictField()
-    source = StringField(default="user_confirmed")
-    confidence = FloatField(default=1.0)
-    tags = ListField(StringField())
-    updated_at = DateTimeField(default=datetime.utcnow)
-
-    meta = {
-        "collection": "long_term_memories",
-        "indexes": ["user_id", "memory_scope", "key", "updated_at"],
     }
 
 

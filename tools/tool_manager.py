@@ -21,6 +21,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def normalize_required_permissions(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
+
+
 class ToolManager:
     def __init__(self, mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name):
         try:
@@ -312,6 +322,10 @@ class ToolManager:
                 else:
                     isValidate = True
 
+                required_permissions = normalize_required_permissions(
+                    api_information.get("x-required-permissions", [])
+                )
+
                 tool = Tool(
                     tool_id=index,
                     operationId=operationId,
@@ -322,7 +336,11 @@ class ToolManager:
                     isValidate=isValidate,
                     path=path,
                     method=method,
-                    request_body=params
+                    request_body=params,
+                    required_permissions=required_permissions,
+                    risk_level=api_information.get("x-risk-level", "read"),
+                    data_domain=api_information.get("x-data-domain", ""),
+                    requires_hitl=bool(api_information.get("x-requires-hitl", isValidate)),
 
                 )
                 tools.append(tool)

@@ -161,29 +161,6 @@ class StructuredOutputParser:
         }
 
     @staticmethod
-    def parse_ambiguity_feedback_intent(text: str) -> Dict[str, Any]:
-        data = StructuredOutputParser.extract_json(text) or {}
-        intent = str(data.get("intent", "")).lower().strip()
-        if intent not in {"confirm_candidate", "provide_info", "abort", "unclear"}:
-            lowered = (text or "").lower()
-            if any(word in lowered for word in ("确认", "继续", "可以", "同意", "ok", "yes", "confirm")):
-                intent = "confirm_candidate"
-            elif any(word in lowered for word in ("取消", "停止", "放弃", "不执行", "abort", "cancel", "no")):
-                intent = "abort"
-            else:
-                intent = "unclear"
-        filled_facts = data.get("filled_facts", {})
-        if not isinstance(filled_facts, dict):
-            filled_facts = {}
-        return {
-            "intent": intent,
-            "revised_query": str(data.get("revised_query", "") or ""),
-            "filled_facts": filled_facts,
-            "confidence": StructuredOutputParser._safe_float(data.get("confidence", 0.0)),
-            "reason": str(data.get("reason", "")),
-        }
-
-    @staticmethod
     def _safe_float(value: Any) -> float:
         try:
             return float(value or 0.0)

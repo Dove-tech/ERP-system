@@ -2,7 +2,6 @@ import argparse
 import copy
 import json
 import os
-import re
 import time
 import uuid
 from pathlib import Path
@@ -70,20 +69,6 @@ def _stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def _extract_quantity(*values: Any) -> Optional[int]:
-    text = " ".join(str(value or "") for value in values)
-    patterns = [
-        r"数量\D{0,8}(\d+)",
-        r"(\d+)\s*件",
-        r"quantity['\"]?\s*[:=]\s*(\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-    return None
-
-
 def _missing_names(value: Any) -> List[str]:
     names = []
     for item in value or []:
@@ -131,18 +116,6 @@ def _pending_params(pending_action: str, pending_payload: Dict[str, Any]) -> Dic
         if missing:
             params["missing"] = missing
         return params
-    if pending_action == "ambiguity_confirm":
-        candidate = pending_payload.get("candidate") or {}
-        params = candidate if isinstance(candidate, dict) else {}
-        quantity = _extract_quantity(
-            pending_payload.get("resolved_query"),
-            pending_payload.get("original_query"),
-            candidate,
-        )
-        if quantity is not None:
-            params = dict(params)
-            params["quantity"] = quantity
-        return params
     if pending_action == "rewrite_grounding_clarify":
         return {}
     return {}
@@ -157,8 +130,6 @@ def _pending_virtual_tool(pending_action: str) -> str:
 
 
 def _pending_operation(pending_action: str, pending_payload: Dict[str, Any]) -> str:
-    if pending_action == "ambiguity_confirm":
-        return "resolve_ambiguity"
     if pending_action == "rewrite_grounding_clarify":
         return "ask_user_clarification"
     return str(pending_payload.get("operation_id") or pending_payload.get("tool_name") or "")
@@ -192,16 +163,7 @@ def _append_trace_events(
         event_type = _event_type(event)
         payload = _event_payload(event)
 
-        if event_type == "ambiguity_detected":
-            quantity = _extract_quantity(
-                payload.get("resolved_query"),
-                payload.get("original_query"),
-                payload.get("candidate"),
-            )
-            params = {"quantity": quantity} if quantity is not None else {}
-            _append_call_once(calls, seen_virtual, "resolve_ambiguity", params)
-
-        elif event_type == "rewrite_grounding_failed":
+        if event_type == "rewrite_grounding_failed":
             _append_call_once(calls, seen_virtual, "ask_user_clarification", {})
 
         elif event_type == "missing_params_need_user":
@@ -246,17 +208,6 @@ def _append_trace_events(
             )
 
         elif event_type == "missing_params_aborted":
-            _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "abort", handled=True)
-
-        elif event_type == "ambiguity_resolved":
-            resolution_type = str(payload.get("resolution_type") or "")
-            intent = "confirm_candidate" if "confirm" in resolution_type else "provide_info"
-            _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), intent, handled=True)
-
-        elif event_type == "ambiguity_feedback_unclear":
-            _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "unclear", handled=True)
-
-        elif event_type == "ambiguity_aborted":
             _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "abort", handled=True)
 
         elif event_type == "rewrite_grounding_resolved":

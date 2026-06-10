@@ -2,9 +2,9 @@
 
 本文档说明 `agent-copilot-hitl-v3-engineering` 相比 `agent-copilot-hitl-prompt-engineering` 的工程升级内容。
 
-本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：session 隔离、scoped memory、长上下文构造、模糊需求澄清、幻觉治理、trace、agent eval、成本与速度优化。
+本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：session 隔离、短期会话历史、长上下文压缩、上下文改写 grounding、幻觉治理、权限校验、trace、agent eval、成本与速度优化。
 
-未实现的高级展望包括：LangGraph 重构、MCP Server Adapter、多 Agent 拆分、在线评测看板、更复杂的长期记忆冲突治理。
+未实现的高级展望包括：LangGraph 重构、MCP Server Adapter、多 Agent 拆分、在线评测看板、长期记忆、模糊需求候选生成。
 
 ## 1. 新工程
 
@@ -46,7 +46,7 @@ agent-copilot-hitl-v3-engineering
 -> 在小工具集合内做工具选择
 ```
 
-## 3. Session 隔离与 Scoped Memory
+## 3. Session 隔离与短期会话历史
 
 新增：
 
@@ -56,7 +56,6 @@ memory/
   __init__.py
   memory_manager.py
   context_manager.py
-  ambiguity_resolver.py
 ```
 
 修改：
@@ -69,17 +68,17 @@ app.py
 
 实现内容：
 
-- `Task` 增加 `user_id`、`session_id`、`tenant_id`、`memory_scope`。
+- `Task` 增加 `user_id`、`session_id`、`tenant_id`。
 - 短期记忆 `SessionMemory` 按 `user_id + session_id` 隔离。
-- 摘要记忆 `SummaryMemory` 存储 session 级摘要和 pinned facts。
-- 长期记忆 `LongTermMemory` 只用于低风险、用户确认过的业务偏好。
+- 摘要记忆 `SummaryMemory` 存储 session 级 rolling summary。
 - `/api_planning` 支持请求中传入 `sessionId/session_id/conversationId`，未传时自动生成新 session。
 - 新建任务会写入用户消息，任务结束后写入系统输出和摘要。
 
 设计取舍：
 
-- 不做无限长期记忆。
-- 不把临时订单参数自动写入长期记忆。
+- 当前版本不做长期记忆。
+- 不保留 `memory_scope`、`retrieved_memory`、`pinned_facts` 等长期记忆或关键事实预留字段。
+- 不把临时订单参数自动写入长期偏好。
 - ERP 场景优先保证隔离和可追踪，避免记忆串用。
 
 ## 4. 长上下文处理
@@ -94,38 +93,47 @@ app.py
 实现内容：
 
 - `ContextManager` 不直接把历史全部塞入 prompt，而是构造 bounded context。
-- 上下文由 `current_query`、`recent_messages`、`summary`、`pinned_facts`、`retrieved_memory` 组成。
-- 已确认字段会进入 `pinned_facts`，例如物料、订单、数量、交期、区域、生产线。
-- Copilot 模式会把前端上下文和后端 scoped memory 组合成新的 `target_query`，再进入原有 API planning。
-- 新增 `target_query` grounding 校验：从改写后的请求中抽取产品、订单、数量、交期、区域、生产线、供应商等关键实体，要求它们必须能在 `contexts`、`pinned_facts`、会话摘要或长期记忆中找到来源。
+- 上下文由 `current_query`、`recent_messages`、`summary` 组成。
+- Copilot 模式会把前端上下文和 session summary 组合成新的 `target_query`，再进入原有 API planning。
+- 新增 `target_query` grounding 校验：从改写后的请求中抽取产品、订单、数量、交期、区域、生产线、供应商等关键实体，要求它们必须能在当前 query、recent messages 或会话摘要中找到来源。
 - 如果关键实体缺少来源，任务不会继续进入 API planning，而是写入 `pending_action=rewrite_grounding_clarify`，进入澄清/确认流程；用户确认后按候选改写继续，用户补充信息时按补充后的请求继续。
 
 面试表达：
 
-> 长上下文不是简单截断，而是状态构造。最新输入、摘要、关键事实和长期偏好有不同优先级，ERP 关键字段必须结构化 pin 住。对 LLM 改写出的 `target_query` 还要做来源校验，关键实体没有上下文或记忆证据时先澄清，不能带着幻觉进入工具调用。
+> 长上下文不是简单截断，而是把完整历史、rolling summary 和最近窗口分层使用。当前版本不把 summary 当作参数事实库，也不做长期记忆；工具参数仍然优先来自当前 query 和最近原始上下文。对 LLM 改写出的 `target_query` 还要做来源校验，关键实体没有当前上下文或摘要证据时先澄清，不能带着幻觉进入工具调用。
 
-## 5. 模糊需求澄清
+## 5. 已删除能力与未来展望
 
-实现位置：
+当前版本已删除：
 
 ```text
 memory/ambiguity_resolver.py
-app.py
+prompt/prompt_registry/ambiguity_feedback_intent/v1.yaml
+prompt/evals/datasets/ambiguity_resolution.json
+prompt/evals/datasets/ambiguity_feedback_intent.json
+pending_action=ambiguity_confirm
+LongTermMemory
+memory_scope
+retrieved_memory
+pinned_facts
 ```
 
-实现内容：
+删除原因：
 
-- 识别“老样子”“上次”“照旧”“按原计划”“加急处理”等模糊表达。
-- 关键词只做低成本初筛；命中模糊表达后，会把 `recent_messages`、`summary`、`pinned_facts`、`retrieved_memory` 交给大模型生成结构化候选方案。
-- 大模型输出必须是 JSON，包含 `candidate_action`、`candidate_query`、`confirm_message`、`missing_fields`、`evidence`、`confidence`。
-- 候选方案进入用户确认前，会做关键实体来源校验；产品、订单、数量、交期、供应商、生产线等信息必须能在上下文或记忆中找到证据。
-- 如果没有可靠记忆，要求用户补充产品、数量、交期、供应商或生产线等关键字段。
-- `Task` 增加 `pending_action` 和 `pending_payload`，用于保存等待确认的候选方案。
-- 用户确认后继续进入原有 API planning；用户补充信息时，将补充内容合并进任务请求再执行。
+- 当前项目主线是 ERP 工具调用、权限、HITL、trace 和 eval，不是长期记忆平台。
+- 模糊需求候选生成依赖长期记忆、候选 grounding、事实冲突处理和大量 eval，当前版本过重。
+- 保留这些字段会让工程看起来已经具备长期记忆和模糊需求解析能力，但实际评测闭环不足。
 
-关键原则：
+未来如果重新引入长期记忆或模糊需求候选，需要补齐：
 
-> 规则负责判断“这是不是模糊需求”，大模型负责把上下文和记忆整理成用户能看懂的候选业务方案。模型只能生成候选解释，不能替代用户确认；候选解释必须带证据，证据不足时进入澄清。
+```text
+长期记忆存储模型
+记忆写入来源和审批策略
+记忆过期与冲突处理
+候选方案 grounding
+模糊需求候选确认 HITL
+对应 eval 和 online integration case
+```
 
 ## 6. Hallucination Control
 
@@ -184,7 +192,7 @@ utils/const.py
 
 - 新增 `TraceRecord`，存储 `trace_id`、`task_id`、`user_id`、`session_id`、`events`、`final_answer`、`status`。
 - 新任务启动时创建 trace。
-- 关键节点写入 trace：context 初始化、ambiguity detected/resolved、task classified、tool selected、params extracted、guardrail blocked、tool invocation started/finished、human feedback intent、answer grounding。
+- 关键节点写入 trace：context 初始化、rewrite grounding、task classified、tool selected、params extracted、missing params、guardrail blocked、tool invocation started/finished、human feedback intent、answer grounding。
 - 新增 `/api_trace_status` 接口，支持按 `trace_id` 或 `task_id` 查询 trace。
 - 默认权限增加 `get_trace_status`。
 
@@ -206,8 +214,6 @@ prompt/evals/runner.py
 prompt/evals/datasets/task_classification.json
 prompt/evals/datasets/param_extraction.json
 prompt/evals/datasets/hallucination_guard.json
-prompt/evals/datasets/ambiguity_resolution.json
-prompt/evals/datasets/ambiguity_feedback_intent.json
 prompt/evals/datasets/slot_filling_intent.json
 prompt/evals/datasets/tool_chain.json
 ```
@@ -239,7 +245,7 @@ tool_summary.json
 实现内容：
 
 - eval 从 prompt 级扩展到 agent 链路级。
-- 新增任务分类、参数抽取、幻觉护栏、模糊需求澄清、多工具链路评测。
+- 新增任务分类、参数抽取、幻觉护栏、缺参补充、多工具链路评测。
 - replay 模式不依赖在线模型，适合作为面试演示和回归验证。
 - 新增集成测试 runner，用产品经理整理的“自然语言 -> 标准操作序列”回放 actual trace，计算工具调用准确率、参数正确率、调用时机合理性、无效工具调用占比、工具执行结果利用率、工具异常处理成功率、任务完成度和任务准确率。
 - 新增 prompt bad case 台账，用于记录失败来源、错误 trace、期望 trace、根因归类、工程处理动作和补充到哪些 eval 数据集。
@@ -256,8 +262,6 @@ python -m unittest discover -s test/test_integration -p "test_*.py"
 当前结果：
 
 ```text
-ambiguity_feedback_intent: 4/4
-ambiguity_resolution: 3/3
 hallucination_guard: 3/3
 human_feedback_intent: 6/6
 param_extraction: 3/3
@@ -266,7 +270,7 @@ task_classification: 5/5
 tool_chain: 4/4
 tool_selection: 5/5
 tool_summary: 2/2
-integration_workflows: 7/7
+integration_workflows: 当前数据集已移除模糊需求 case
 ```
 
 补充说明：
@@ -276,7 +280,7 @@ docs/user_intent_enhancement_upgrade.md
 docs/integration_testing.md
 ```
 
-`docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、模糊需求反馈识别、pending_action 分流和新增 eval 覆盖。
+`docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、上下文改写澄清、工具执行确认、pending_action 分流和新增 eval 覆盖。当前版本已删除模糊需求反馈识别。
 
 `docs/integration_testing.md` 专门描述工作流级集成测试，包括 case 数据结构、执行命令和各项指标的计算方式。
 
@@ -307,7 +311,7 @@ models/remote_embedding_model.py
 已执行：
 
 ```powershell
-python -m py_compile app.py apis\api_planning_hub.py tasks\task_manager.py entity\task_entity.py entity\memory_entity.py memory\memory_manager.py memory\context_manager.py memory\ambiguity_resolver.py guardrails\hallucination_guard.py trace\trace_manager.py tools\tool_use_hub.py models\remote_embedding_model.py prompt\evals\runner.py
+python -m py_compile app.py apis\api_planning_hub.py tasks\task_manager.py entity\task_entity.py entity\memory_entity.py memory\memory_manager.py memory\context_manager.py guardrails\hallucination_guard.py trace\trace_manager.py tools\tool_use_hub.py models\remote_embedding_model.py prompt\evals\runner.py
 ```
 
 已执行：

@@ -7,15 +7,14 @@ class Task(Document):
     user_id = StringField() # 用户隔离维度
     session_id = StringField() # 会话隔离维度
     tenant_id = StringField() # 租户隔离维度，试点阶段默认 internal
-    memory_scope = StringField() # 记忆作用域
+    operator_context = DictField() # 权限上下文快照
     status = IntField() # 任务的状态
     task_type = IntField()  # 任务的类型
     raw_query = StringField() # 用户的最初查询请求
     changed_query = StringField()  # 查询请求，最初与raw_query一致，任务执行中间可能发生变化
     curr_task_desc = StringField() # 任务的当前描述，一般由大模型依据用户的最初查询请求生成也可以是任务执行过程中描述
-    pinned_facts = DictField() # 已确认或可追踪来源的关键事实
     context_summary = StringField() # 长上下文压缩摘要
-    pending_action = StringField() # 等待用户确认的业务动作，例如 ambiguity_confirm
+    pending_action = StringField() # 等待用户确认的业务动作，例如缺参补充、请求澄清或工具执行确认
     pending_payload = DictField() # 等待用户确认的结构化候选方案
     nodes = ListField(DictField()) # 前端界面调用链展示部分
     edges = ListField(DictField()) # 前端界面调用链展示部分
@@ -32,13 +31,12 @@ class Task(Document):
             'user_id': self.user_id,
             'session_id': self.session_id,
             'tenant_id': self.tenant_id,
-            'memoryScope': self.memory_scope,
+            'operatorContext': self.operator_context,
             'status': self.status,
             'nodes': self.nodes,
             'edges': self.edges,
             'isSuccess': self.graph_title,
             'systemOutput': self.system_output,
-            'pinnedFacts': self.pinned_facts,
             'contextSummary': self.context_summary,
             'pendingAction': self.pending_action,
             'pendingPayload': self.pending_payload,

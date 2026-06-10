@@ -25,3 +25,11 @@ class Tool(Document):
     path = StringField()
     method = StringField()
     request_body = ListField(EmbeddedDocumentField(Parameter))
+    required_permissions = ListField(StringField(), default=[])
+    risk_level = StringField(default="read")
+    data_domain = StringField(default="")
+    requires_hitl = BooleanField(default=False)
+
+    meta = {
+        "strict": False,
+    }

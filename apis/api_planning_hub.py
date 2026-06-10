@@ -4,6 +4,7 @@ from apis.api_selection_hub import ApiSelectionHub
 from guardrails import HallucinationGuard
 from models import LargeLanguageModel
 from param_extraction.param_extraction_hub import ParamExtractionHub
+from permissions import OperatorContext, ToolPermissionGuard
 from tasks import TaskManager,GenerateTaskHub
 from tools import ToolSummaryHub, ToolUseHub, ToolManager
 from trace import TraceManager
@@ -43,6 +44,7 @@ class ApiPlanningHub:
         self.tool_manager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         self.trace_manager = TraceManager(mongo_host, mongo_db, mongo_port)
         self.hallucination_guard = HallucinationGuard()
+        self.permission_guard = ToolPermissionGuard()
         self.executor = executor
         self.llm = LargeLanguageModel(api_url, api_key)
         self.model = model
@@ -73,6 +75,48 @@ class ApiPlanningHub:
                 "system_output": system_output,
             })
         self.task_manager.update_task_recorder(task_id, TASK_STATUS_RUNNING, system_output, task_type=task_type)
+
+    def _operator_context_from_task(self, task):
+        if task is None:
+            return OperatorContext()
+        context = getattr(task, "operator_context", None) or {}
+        if context:
+            return OperatorContext.from_dict(context)
+        return OperatorContext.from_dict({
+            "user_id": getattr(task, "user_id", ""),
+            "tenant_id": getattr(task, "tenant_id", ""),
+        })
+
+    def _trace_permission_result(self, task, stage, tool, params, result):
+        if task is None:
+            return
+        self.trace_manager.add_event(task.trace_id, "permission_check_started", {
+            "stage": stage,
+            "tool_id": getattr(tool, "tool_id", None),
+            "operation_id": getattr(tool, "operationId", ""),
+            "params": params or {},
+        })
+        event_type = "permission_check_passed" if result.get("allow") else "permission_check_failed"
+        self.trace_manager.add_event(task.trace_id, event_type, {
+            "stage": stage,
+            "tool_id": getattr(tool, "tool_id", None),
+            "operation_id": getattr(tool, "operationId", ""),
+            "reason": result.get("reason", ""),
+            "action": result.get("action", ""),
+            "details": result.get("details", {}),
+        })
+
+    def _permission_error_result(self, task_desc, tool, params, permission_result):
+        return {
+            "code": TASK_ERROR_CODE,
+            "result": "permission_denied",
+            "tool": getattr(tool, "name_for_human", "permission_denied"),
+            "missing_param": [],
+            "param": params or {},
+            "query": task_desc,
+            "task_description": f"权限校验失败：{permission_result.get('reason', '')}",
+            "permission": permission_result,
+        }
 
     def _update_task_curr_desc(self,task_id,task_desc):
         self.task_manager.update_task_recorder(task_id, TASK_STATUS_RUNNING, "正在为您分析中，请稍等......",
@@ -192,7 +236,7 @@ class ApiPlanningHub:
                     return False
         return True
 
-    def _supplement_parameters(self, new_query, missing_param):
+    def _supplement_parameters(self, new_query, missing_param, operator_context=None, task=None):
         """
         补充缺失的参数值。
         该方法根据新的查询语句和缺失的参数名，尝试从工具调用的结果中获取缺失的参数值。
@@ -205,11 +249,22 @@ class ApiPlanningHub:
             若找到缺失参数的值，返回参数值和工具名称、汇总响应结果；否则返回3个 None
         """
         #缺失的参数有可能是其他工具调用的结果
-        tool = self.api_selection_hub.get_tool_coarse_and_fine(new_query, None, topK=self.topK)
+        tool = self.api_selection_hub.get_tool_coarse_and_fine(
+            new_query,
+            None,
+            topK=self.topK,
+            operator_context=operator_context,
+            permission_guard=self.permission_guard,
+        )
         if tool is None:
             return None, None, None
         params, new_missing_param = self.param_extraction_hub.extraction_params(new_query, tool)
         if len(new_missing_param) != 0:
+            return None, None, None
+
+        permission_result = self.permission_guard.validate_tool_call(tool, params, operator_context)
+        self._trace_permission_result(task, "supplement_parameter_tool", tool, params, permission_result)
+        if not permission_result.get("allow"):
             return None, None, None
 
         single_tool_response = self.tool_use_hub.tool_use(tool, params)
@@ -236,7 +291,7 @@ class ApiPlanningHub:
         else:
             return None, None, None
 
-    def _tool_check(self, tool, task_desc, raw_query):
+    def _tool_check(self, tool, task_desc, raw_query, operator_context=None, task=None):
         """
         对工具的检查，此函数接收工具和用户查询语句
 
@@ -253,11 +308,21 @@ class ApiPlanningHub:
             一个字典，包含处理结果的相关信息，
             如状态码code、工具名称tool、结果内容result、缺失参数信息missing_param、参数列表param和任务描述task_description等
         """
+        operator_context = operator_context or self._operator_context_from_task(task)
+        tool_permission = self.permission_guard.validate_tool_access(tool, operator_context)
+        self._trace_permission_result(task, "tool_selected", tool, {}, tool_permission)
+        if not tool_permission.get("allow"):
+            return self._permission_error_result(task_desc, tool, {}, tool_permission)
+
         params, missing_params = self.param_extraction_hub.extraction_params(task_desc + " " + raw_query, tool)
         missing_params_supplemented = []
         new_params = params.copy()
         if len(missing_params) == 0:
             logger.debug(f"[{raw_query}:{task_desc}]未缺失参数，准备安全检查")
+            param_permission = self.permission_guard.validate_parameter_scope(new_params, operator_context)
+            self._trace_permission_result(task, "params_extracted", tool, new_params, param_permission)
+            if not param_permission.get("allow"):
+                return self._permission_error_result(task_desc, tool, new_params, param_permission)
             inject_flag, reason = self.generate_task_hub.gen_judge_task(task_desc, tool, new_params)
             if inject_flag:
                 return {
@@ -293,7 +358,7 @@ class ApiPlanningHub:
                                                         f'{missing_param.name}: {missing_param.description}')
                 logger.debug(f"[{task_desc}]参数[{missing_param.name}:{missing_param.description}]生成或补齐任务的描述词为：{gen_param_query}")
                 supplement_param, supplement_param_tool, supplement_param_result = self._supplement_parameters(
-                    gen_param_query, missing_param.name)
+                    gen_param_query, missing_param.name, operator_context=operator_context, task=task)
                 if supplement_param is not None:
                     logger.debug(f"[{raw_query}:{task_desc}]的缺失参数{missing_param.name}已补充：\n{supplement_param_tool}\n{supplement_param_result}")
                     params[missing_param.name] = supplement_param
@@ -318,6 +383,10 @@ class ApiPlanningHub:
                 }
 
             logger.debug(f"[{raw_query}:{task_desc}]参数已补全，进行安全检查")
+            param_permission = self.permission_guard.validate_parameter_scope(params, operator_context)
+            self._trace_permission_result(task, "params_supplemented", tool, params, param_permission)
+            if not param_permission.get("allow"):
+                return self._permission_error_result(task_desc, tool, params, param_permission)
             inject_flag, reason = self.generate_task_hub.gen_judge_task(task_desc, tool, params)
             if inject_flag:
                 return {
@@ -355,6 +424,9 @@ class ApiPlanningHub:
             "guardrail": self.hallucination_guard.validate_tool_call(
                 tool, params, raw_query
             ),
+            "permission": self.permission_guard.validate_tool_call(
+                tool, params, operator_context
+            ),
         }
 
     def _parameter_to_dict(self, parameter):
@@ -387,7 +459,16 @@ class ApiPlanningHub:
             一个字典，包含处理结果的相关信息，如状态码、工具名称、结果内容、缺失参数信息、参数列表和任务描述等
         """
         task = self.task_manager.get_task_by_id(task_id)
-        tool = self.api_selection_hub.get_tool_coarse_and_fine(task_desc, None, topK=self.topK)
+        operator_context = self._operator_context_from_task(task)
+        if task is not None:
+            self.trace_manager.add_event(task.trace_id, "operator_context_loaded", operator_context.to_dict())
+        tool = self.api_selection_hub.get_tool_coarse_and_fine(
+            task_desc,
+            None,
+            topK=self.topK,
+            operator_context=operator_context,
+            permission_guard=self.permission_guard,
+        )
 
         if tool is None:
             txt = f"您的要求[{raw_query}]未找到合适的工具，请换个问法或问题再试试。"
@@ -410,7 +491,7 @@ class ApiPlanningHub:
                     "operation_id": tool.operationId,
                     "tool_name": tool.name_for_human,
                 })
-            result = self._tool_check(tool, task_desc, raw_query)
+            result = self._tool_check(tool, task_desc, raw_query, operator_context=operator_context, task=task)
             if result["code"] == TASK_SUCCESS_CODE:
                 if task is not None:
                     self.trace_manager.add_event(task.trace_id, "params_extracted", {
@@ -433,6 +514,7 @@ class ApiPlanningHub:
                                                             "params": result["param"],
                                                             "task_desc": task_desc,
                                                             "raw_query": raw_query,
+                                                            "permission": result.get("permission", {}),
                                                         })
 
             else:
@@ -470,15 +552,17 @@ class ApiPlanningHub:
                         pending_payload=pending_payload,
                     )
                     return
+                block_event = "permission_blocked" if result.get("result") == "permission_denied" else "guardrail_blocked"
                 if task is not None:
-                    self.trace_manager.add_event(task.trace_id, "guardrail_blocked", {
+                    self.trace_manager.add_event(task.trace_id, block_event, {
                         "tool": result.get("tool"),
                         "reason": result.get("task_description"),
                         "guardrail": result.get("guardrail", {}),
+                        "permission": result.get("permission", {}),
                     })
                 self.task_manager.update_task_recorder(task_id, TASK_STATUS_FINISH, TASK_SYS_OUTPUT_STOP+result["task_description"], graph_title=GRAPH_TITLE_FAILURE, )
                 if task is not None:
-                    self.trace_manager.finish_trace(task.trace_id, result["task_description"], status="guardrail_blocked")
+                    self.trace_manager.finish_trace(task.trace_id, result["task_description"], status=block_event)
                 # return result
 
     def api_planning_handle_human_feedback(self, task, human_feedback):
@@ -586,6 +670,11 @@ class ApiPlanningHub:
 
     def _process_single_api_invoke(self,query,task,tool,params):
         logger.debug(f"[{query}]准备进行工具{tool.operationId}调用,参数为：{params}")
+        operator_context = self._operator_context_from_task(task)
+        permission_result = self.permission_guard.validate_tool_call(tool, params, operator_context)
+        self._trace_permission_result(task, "before_tool_invoke", tool, params, permission_result)
+        if not permission_result.get("allow"):
+            return self._permission_error_result(query, tool, params, permission_result)
         self.trace_manager.add_event(task.trace_id, "tool_invocation_started", {
             "tool_id": tool.tool_id,
             "operation_id": tool.operationId,

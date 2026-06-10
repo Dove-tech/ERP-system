@@ -21,7 +21,7 @@ class TaskManager:
 
     def create_task(self, user_raw_query: str, exists_task_id: str = "",
                     user_id: str = "", session_id: str = "",
-                    tenant_id: str = "internal", memory_scope: str = "erp") -> Task:
+                    tenant_id: str = "internal", operator_context: dict = None) -> Task:
         """
         创建任务
         """
@@ -44,13 +44,12 @@ class TaskManager:
         task.user_id = str(user_id or "")
         task.session_id = str(session_id or task_id)
         task.tenant_id = tenant_id or "internal"
-        task.memory_scope = memory_scope or "erp"
+        task.operator_context = operator_context or {}
         task.status = new_task_status
         task.task_type = TASK_TYPE_UNKNOWN
         task.raw_query = user_raw_query
         task.changed_query = user_raw_query
         task.curr_task_desc = ""
-        task.pinned_facts = {}
         task.context_summary = ""
         task.pending_action = ""
         task.pending_payload = {}
@@ -65,8 +64,8 @@ class TaskManager:
     def update_task_recorder(self, task_id: str, task_status: int, system_output: str, graph_title: str = "",
                             curr_task_desc="", task_type: int = TASK_TYPE_MAINTAIN, nodes: list = None,
                             edges: list = None, curr_tool_id: int = 0, curr_tool_param: dict = None, changed_query="",
-                            trace_id=None, pinned_facts=None, context_summary=None,
-                            pending_action=None, pending_payload=None) -> str:
+                            trace_id=None, context_summary=None, pending_action=None,
+                            pending_payload=None) -> str:
         """
         更新任务表update_task
         """
@@ -97,8 +96,6 @@ class TaskManager:
                 task.curr_tool_param = curr_tool_param
             if trace_id is not None:
                 task.trace_id = trace_id
-            if pinned_facts is not None:
-                task.pinned_facts = pinned_facts
             if context_summary is not None:
                 task.context_summary = context_summary
             if pending_action is not None:

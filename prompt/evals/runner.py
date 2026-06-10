@@ -12,7 +12,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models import LargeLanguageModel
 from guardrails import HallucinationGuard
-from memory.ambiguity_resolver import AmbiguityResolver
 from prompt.prompt_engineering import PromptRegistry, StructuredOutputParser
 from prompt.prompt_hub import create_prompt_hub
 
@@ -152,32 +151,6 @@ def run_hallucination_guard(case: Dict[str, Any], mode: str, hub, llm=None) -> T
     return passed, {"actual": result, "expected": expected}
 
 
-class DummyMemoryManager:
-    def __init__(self, case: Dict[str, Any]):
-        self.case = case
-
-    def get_preferences(self, user_id: str, memory_scope: str = "erp", limit: int = 10):
-        return self.case.get("preferences", [])
-
-    def get_summary(self, user_id: str, session_id: str):
-        return {
-            "summary": self.case.get("summary", ""),
-            "pinned_facts": self.case.get("pinned_facts", {}),
-        }
-
-
-def run_ambiguity_resolution(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
-    resolver = AmbiguityResolver(DummyMemoryManager(case))
-    result = resolver.resolve(case["query"], case.get("user_id", "u1"), case.get("session_id", "s1"))
-    expected = case["expected"]
-    passed = (
-        result.get("is_ambiguous") == expected["is_ambiguous"]
-        and result.get("confidence", 0) >= expected.get("min_confidence", 0)
-        and bool(result.get("resolved_query")) == expected.get("has_resolved_query", False)
-    )
-    return passed, {"actual": result, "expected": expected}
-
-
 def run_tool_chain(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
     actual = case.get("model_steps", [])
     expected = case["expected"].get("steps", [])
@@ -212,33 +185,6 @@ def run_slot_filling_intent(case: Dict[str, Any], mode: str, hub, llm=None) -> T
     return passed, {"output": output, "parsed": parsed, "expected": expected}
 
 
-def run_ambiguity_feedback_intent(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
-    registry = PromptRegistry()
-    prompt = registry.render("ambiguity_feedback_intent", getattr(hub, "model_name", DEFAULT_MODEL_NAME), {
-        "original_query": case.get("original_query", ""),
-        "candidate": json.dumps(case.get("candidate", {}), ensure_ascii=False),
-        "user_feedback": case.get("feedback", ""),
-    })
-    if mode == "render":
-        expected_tokens = [case.get("original_query", ""), case.get("feedback", "")]
-        return all(token in prompt for token in expected_tokens if token), {"prompt": prompt[:500]}
-
-    output = case.get("model_output", "")
-    if mode == "online":
-        output = llm.chat_completions(prompt, hub.model_name, DEFAULT_MODEL_TEMPERATURE, DEFAULT_MODEL_TOP_P)
-    parsed = StructuredOutputParser.parse_ambiguity_feedback_intent(output)
-    expected = case["expected"]
-    revised_query = parsed.get("revised_query", "")
-    expected_facts = expected.get("filled_facts", {})
-    actual_facts = parsed.get("filled_facts", {})
-    passed = (
-        parsed.get("intent") == expected.get("intent")
-        and all(token in revised_query for token in expected.get("revised_query_contains", []))
-        and all(actual_facts.get(key) == value for key, value in expected_facts.items())
-    )
-    return passed, {"output": output, "parsed": parsed, "expected": expected}
-
-
 RUNNERS = {
     "human_feedback_intent": run_human_feedback_intent,
     "tool_selection": run_tool_selection,
@@ -246,10 +192,8 @@ RUNNERS = {
     "task_classification": run_task_classification,
     "param_extraction": run_param_extraction,
     "hallucination_guard": run_hallucination_guard,
-    "ambiguity_resolution": run_ambiguity_resolution,
     "tool_chain": run_tool_chain,
     "slot_filling_intent": run_slot_filling_intent,
-    "ambiguity_feedback_intent": run_ambiguity_feedback_intent,
 }
 
 

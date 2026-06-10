@@ -1,6 +1,7 @@
 from customize_milvus_wrapper import CustomizeMilvus
 from models import LargeLanguageModel, RemoteEmbeddingModel
 from prompt import PromptModelHub, QwenModelPromptHub, create_prompt_hub
+from permissions import ToolPermissionGuard
 from tools import ToolManager
 from utils import logger
 import traceback
@@ -31,7 +32,17 @@ class ApiSelectionHub:
         self.top_p = top_p
 
     #TODO required_argument的作用是什么？
-    def get_tool_coarse_and_fine(self, task_desc, required_argument, topK):
+    def _filter_tools_by_permission(self, tools, operator_context=None, permission_guard=None):
+        if operator_context is None:
+            return tools
+        guard = permission_guard or ToolPermissionGuard()
+        allowed_tools, denied_tools = guard.filter_allowed_tools(tools, operator_context)
+        if denied_tools:
+            logger.info(f"[permission] filtered denied tools: {denied_tools}")
+        return allowed_tools
+
+    def get_tool_coarse_and_fine(self, task_desc, required_argument, topK,
+                                 operator_context=None, permission_guard=None):
         """
         根据任务描述选择合适的工具。
         该函数接收一个查询语句、可选的必需参数和返回工具数量，通过与 Milvus 数据库交互获取相关工具，
@@ -66,12 +77,20 @@ class ApiSelectionHub:
             if required_argument is None:
                 # 使用重排序后的工具
                 tools = reranked_tools if reranked_tools else vector_search_tools
+                tools = self._filter_tools_by_permission(tools, operator_context, permission_guard)
+                if not tools:
+                    logger.warning(f"[permission] no allowed tools for query: {task_desc}")
+                    return None
                 prompt = self.PromptModelHub.gen_tool_selection_prompt(task_desc, tools)
                 model_output = self.LargeLanguageModel.chat_completions(prompt, self.model, self.temperature, self.top_p)
                 final_tool = self.PromptModelHub.post_process_tool_selection_result(model_output, tools)
             else:
                 # 使用重排序后的工具
                 tools = reranked_tools if reranked_tools else vector_search_tools
+                tools = self._filter_tools_by_permission(tools, operator_context, permission_guard)
+                if not tools:
+                    logger.warning(f"[permission] no allowed tools for query: {task_desc}")
+                    return None
                 prompt = self.PromptModelHub.gen_required_argument_tool_selection_prompt(task_desc, required_argument, tools)
                 model_output = self.LargeLanguageModel.chat_completions(prompt, self.model, self.temperature, self.top_p)
                 final_tool = self.PromptModelHub.post_process_tool_selection_result(model_output, tools)

@@ -13,7 +13,6 @@ class WorkflowIntegrationMetricsTest(unittest.TestCase):
         self.assertIn("wf_inventory_lookup", case_ids)
         self.assertIn("wf_create_order_full_params", case_ids)
         self.assertIn("wf_create_order_missing_supplier", case_ids)
-        self.assertIn("wf_ambiguous_repeat_order", case_ids)
         self.assertIn("wf_plan_adjustment_multi_tool", case_ids)
         self.assertIn("wf_irrelevant_request_no_tool", case_ids)
         self.assertIn("wf_inventory_api_exception", case_ids)

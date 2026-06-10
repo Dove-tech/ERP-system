@@ -138,7 +138,7 @@ docs/integration_test_case_catalog.md
 - `required_result_facts`：最终回答必须利用到的工具结果事实或关键词。
 - `final_answer_contains`：最终回答中必须出现的文本片段。
 
-这里的 `ask_user_confirmation`、`ask_user_clarification`、`resolve_ambiguity`、`guardrail_block`、`loop_guard` 是虚拟控制事件，不是一定存在的后端物理工具。它们的作用是把“等待确认、缺参澄清、模糊需求澄清、安全拦截、循环保护”这些 Agent 控制行为纳入统一 trace 评测。
+这里的 `ask_user_confirmation`、`ask_user_clarification`、`guardrail_block`、`loop_guard` 是虚拟控制事件，不是一定存在的后端物理工具。它们的作用是把“等待确认、缺参澄清、上下文改写澄清、安全拦截、循环保护”这些 Agent 控制行为纳入统一 trace 评测。
 
 ## 4. actual_trace 到底从哪里来
 
@@ -161,7 +161,6 @@ docs/integration_test_case_catalog.md
 后端真实 trace 主要来自 `TraceRecord.events`。当前工程中比较关键的事件包括：
 
 ```text
-ambiguity_detected
 rewrite_grounding_failed
 missing_params_need_user
 tool_selected
@@ -169,8 +168,6 @@ params_extracted
 human_feedback_intent
 missing_params_feedback_parsed
 missing_params_feedback_unclear
-ambiguity_resolved
-ambiguity_feedback_unclear
 guardrail_blocked
 tool_invocation_started
 tool_invocation_finished
@@ -224,9 +221,6 @@ tool_execution_confirm
 
 missing_params_clarify
   缺少必填参数，等待用户补充。
-
-ambiguity_confirm
-  用户表达模糊，系统给出候选理解，等待用户确认。
 
 rewrite_grounding_clarify
   上下文改写缺少证据，等待用户澄清。
@@ -303,7 +297,7 @@ online_workflows.json 写好 human_simulation
 
 这些字段的含义是：
 
-- `when`：期望系统当前处于哪类等待状态，例如 `tool_execution_confirm`、`missing_params_clarify`、`ambiguity_confirm`。
+- `when`：期望系统当前处于哪类等待状态，例如 `tool_execution_confirm`、`missing_params_clarify`、`rewrite_grounding_clarify`。
 - `expected_tool`：期望当前等待确认或补参的是哪个工具。
 - `expected_params`：期望确认页或补参页中已经具备的关键参数。
 - `expected_missing_params`：期望系统识别出的缺失参数。
@@ -369,8 +363,8 @@ missing_params_clarify
 rewrite_grounding_clarify
   -> 进入上下文澄清逻辑，处理“按这个理解继续”或补充事实。
 
-ambiguity_confirm
-  -> 进入模糊需求确认逻辑，处理“确认，按这个方案继续”。
+rewrite_grounding_clarify
+  -> 进入上下文改写澄清逻辑，处理“确认，按这个理解继续”或用户补充信息。
 
 tool_execution_confirm
   -> 进入工具执行确认逻辑，识别 confirm / abort / unclear，再决定执行工具、终止任务或继续等待。
@@ -411,7 +405,7 @@ hitl: 7
 | `hc_05_multi_step_two_confirm` | 两步多轮确认 | 每一步确认点是否正确，第二步是否使用第一步结果 |
 | `hc_06_missing_supplier_fill_then_confirm` | 缺供应商后补参 | 缺参识别、用户补参合并、补参后重新确认 |
 | `hc_07_confirm_stage_param_change_reconfirm` | 确认阶段改参数 | 识别“可以但数量改成 50”，不能直接执行，必须重新确认 |
-| `hc_08_ambiguous_repeat_order_with_memory` | 模糊需求有上下文 | 基于上下文生成候选方案，候选确认后再执行工具 |
+| `hc_08_ambiguous_repeat_order_with_memory` | 已删除 | 模糊需求候选生成已从当前正式集成测试中移除，后续作为长期记忆能力展望 |
 | `hc_09_context_follow_up_inventory` | 多轮上下文追问 | 第二轮“它”的指代解析、session 隔离、上下文参数继承 |
 | `hc_10_tool_summary_uses_result_facts` | 工具结果总结 | 最终回答必须使用订单和状态等关键结果 |
 
@@ -978,7 +972,7 @@ HITL 没触发
 
 用户反馈没处理好
   看 hitl_response_handling_accuracy。
-  再检查 human_feedback_intent、slot_filling_intent、ambiguity_feedback_intent。
+  再检查 human_feedback_intent、slot_filling_intent。
 
 最终回答不可信
   看 tool_result_utilization_rate、final_answer_matched、answer_grounding_checked。

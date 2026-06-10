@@ -131,12 +131,11 @@
       "root_cause": "旧的关键词规则只要看到“可以”就短路为 confirm，没有进入场景化 LLM 解析。",
       "engineering_action": [
         "将短回复确认和混合反馈分开处理。",
-        "新增 slot_filling_intent 和 ambiguity_feedback_intent prompt。",
+        "新增 slot_filling_intent prompt。",
         "把混合反馈 case 放入 replay eval。"
       ],
       "evals_added": [
-        "slot_filling_intent:slot_update_existing_and_fill_missing",
-        "ambiguity_feedback_intent:ambiguity_provide_info"
+        "slot_filling_intent:slot_update_existing_and_fill_missing"
       ],
       "status": "fixed"
     },

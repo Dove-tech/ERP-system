@@ -10,7 +10,6 @@
     "update_plan",
     "update_order_status",
     "delete_order",
-    "resolve_ambiguity",
     "ask_user_clarification",
     "ask_user_confirmation",
     "report_tool_exception",
@@ -471,85 +470,6 @@
               "productId": 1001,
               "quantity": 50,
               "deliveryDate": "2026-06-10",
-              "supplierId": 3
-            },
-            "requires_confirmation": true
-          }
-        ],
-        "required_result_facts": [
-          "订单"
-        ],
-        "final_answer_contains": [
-          "订单"
-        ]
-      }
-    },
-    {
-      "id": "hc_08_ambiguous_repeat_order_with_memory",
-      "category": "happy",
-      "scenario": "模糊需求：用户说照上次方案再下一单，系统要先基于上下文生成候选方案并让用户确认。",
-      "natural_language": "照上次方案再下一单，但是数量改成 50",
-      "request": {
-        "query": "照上次方案再下一单，但是数量改成 50",
-        "isCopilot": true,
-        "isContext": true,
-        "contexts": [
-          {
-            "role": "user",
-            "content": "上次方案是产品 1001、供应商 3、交期 2026-06-10、数量 20。"
-          },
-          {
-            "role": "assistant",
-            "content": "已记录上次订单方案：产品 1001，供应商 3，数量 20，交期 2026-06-10。"
-          }
-        ]
-      },
-      "human_simulation": [
-        {
-          "when": "ambiguity_confirm",
-          "expected_tool": "resolve_ambiguity",
-          "expected_params": {
-            "quantity": 50
-          },
-          "feedback": "确认，按这个方案继续",
-          "expected_intent": "confirm"
-        },
-        {
-          "when": "tool_execution_confirm",
-          "expected_tool": "create_order",
-          "expected_params": {
-            "quantity": 50
-          },
-          "feedback": "立即执行",
-          "expected_intent": "confirm"
-        }
-      ],
-      "expected": {
-        "task_status": "completed",
-        "operation_sequence": [
-          {
-            "tool": "resolve_ambiguity",
-            "params": {
-              "quantity": 50
-            }
-          },
-          {
-            "tool": "ask_user_confirmation",
-            "params": {
-              "quantity": 50
-            }
-          },
-          {
-            "tool": "ask_user_confirmation",
-            "params": {
-              "quantity": 50
-            }
-          },
-          {
-            "tool": "create_order",
-            "params": {
-              "productId": 1001,
-              "quantity": 50,
               "supplierId": 3
             },
             "requires_confirmation": true
