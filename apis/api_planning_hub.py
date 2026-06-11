@@ -1,7 +1,7 @@
 import json
 
 from apis.api_selection_hub import ApiSelectionHub
-from guardrails import HallucinationGuard
+from guardrails import CrossPromptRouteGuard, HallucinationGuard
 from models import LargeLanguageModel
 from param_extraction.param_extraction_hub import ParamExtractionHub
 from permissions import OperatorContext, ToolPermissionGuard
@@ -44,6 +44,7 @@ class ApiPlanningHub:
         self.tool_manager = ToolManager(mongo_host, mongo_db, mongo_port, milvus_uri, milvus_db_name)
         self.trace_manager = TraceManager(mongo_host, mongo_db, mongo_port)
         self.hallucination_guard = HallucinationGuard()
+        self.cross_prompt_route_guard = CrossPromptRouteGuard()
         self.permission_guard = ToolPermissionGuard()
         self.executor = executor
         self.llm = LargeLanguageModel(api_url, api_key)
@@ -117,6 +118,55 @@ class ApiPlanningHub:
             "task_description": f"权限校验失败：{permission_result.get('reason', '')}",
             "permission": permission_result,
         }
+
+    def _route_cross_validation_error_result(self, task_desc, tool, params, route_result):
+        return {
+            "code": TASK_ERROR_CODE,
+            "result": "route_cross_validation",
+            "tool": "异常调用节点-高风险工具意图未通过交叉验证",
+            "missing_param": [],
+            "param": params or {},
+            "query": task_desc,
+            "task_description": route_result.get("reason", "高风险工具意图未通过多提示词交叉验证"),
+            "guardrail": route_result,
+        }
+
+    def _validate_route_cross_prompt(self, tool, params, task_desc, raw_query, task=None):
+        route_guard = getattr(self, "cross_prompt_route_guard", None)
+        if route_guard is None:
+            return {"allow": True, "guardrail_action": "allow", "skipped": True, "reason": "route guard disabled"}
+
+        risk_level = self.hallucination_guard.classify_tool_risk(tool)
+        route_result = route_guard.validate(
+            tool=tool,
+            params=params,
+            raw_query=raw_query,
+            task_desc=task_desc,
+            llm=getattr(self, "llm", None),
+            model=getattr(self, "model", ""),
+            temperature=getattr(self, "temperature", 0.01),
+            top_p=getattr(self, "top_p", 0.01),
+            risk_level=risk_level,
+        )
+        if task is not None and not route_result.get("skipped"):
+            self.trace_manager.add_event(task.trace_id, "route_cross_validation_started", {
+                "tool_id": getattr(tool, "tool_id", None),
+                "operation_id": getattr(tool, "operationId", ""),
+                "tool_name": getattr(tool, "name_for_human", ""),
+                "params": params or {},
+                "risk_level": risk_level,
+            })
+            for vote in route_result.get("votes", []):
+                self.trace_manager.add_event(task.trace_id, "route_cross_validation_vote", vote)
+            self.trace_manager.add_event(task.trace_id, "route_cross_validation_decided", {
+                "tool_id": getattr(tool, "tool_id", None),
+                "operation_id": getattr(tool, "operationId", ""),
+                "action": route_result.get("guardrail_action"),
+                "allow": route_result.get("allow"),
+                "reason": route_result.get("reason"),
+                "vote_summary": route_result.get("vote_summary", {}),
+            })
+        return route_result
 
     def _update_task_curr_desc(self,task_id,task_desc):
         self.task_manager.update_task_recorder(task_id, TASK_STATUS_RUNNING, "正在为您分析中，请稍等......",
@@ -413,6 +463,10 @@ class ApiPlanningHub:
                     "guardrail": guard_result,
                 }
 
+        route_result = self._validate_route_cross_prompt(tool, params, task_desc, raw_query, task=task)
+        if not route_result.get("allow", True):
+            return self._route_cross_validation_error_result(task_desc, tool, params, route_result)
+
         return {
             "code": TASK_SUCCESS_CODE,
             "result": "",
@@ -427,6 +481,7 @@ class ApiPlanningHub:
             "permission": self.permission_guard.validate_tool_call(
                 tool, params, operator_context
             ),
+            "route_cross_validation": route_result,
         }
 
     def _parameter_to_dict(self, parameter):

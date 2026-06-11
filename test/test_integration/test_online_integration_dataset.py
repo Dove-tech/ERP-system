@@ -17,9 +17,9 @@ class OnlineIntegrationDatasetTest(unittest.TestCase):
             categories[case.get("category", "")] = categories.get(case.get("category", ""), 0) + 1
 
         self.assertEqual(categories.get("happy"), 9)
-        self.assertEqual(categories.get("bad"), 15)
+        self.assertEqual(categories.get("bad"), 14)
         self.assertEqual(categories.get("hitl"), 7)
-        self.assertEqual(len(self.cases), 31)
+        self.assertEqual(len(self.cases), 30)
 
     def test_dataset_does_not_handwrite_actual_trace(self):
         for case in self.cases:

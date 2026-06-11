@@ -340,7 +340,6 @@ query_product -> query_inventory
 
 ```text
 context_rewrite_accuracy
-grounded_rewrite_rate
 session_isolation_pass_rate
 parameter_accuracy
 ```
@@ -738,7 +737,6 @@ missing_params_clarify_or_reject
 主要指标：
 
 ```text
-grounded_rewrite_rate
 invalid_tool_call_rate
 unsafe_execution_rate
 ```
@@ -1095,4 +1093,4 @@ HITL 改参数
 
 可以这样讲：
 
-> 我们把在线集成测试的数据集设计成只包含用户输入、标准 workflow、虚拟用户反馈和预期最终结果，不手写 actual trace。runner 会真实调用后端接口，遇到 HITL 状态时校验当前确认点的工具和参数，再自动提交确认、取消、补参数或修改参数等反馈。任务完成后从 TraceRecord 拉取真实执行轨迹，归一化为 actual_trace，再和 expected 比较。case 覆盖单工具查询、写操作确认、多工具依赖、缺参补充、HITL 改参数、上下文改写澄清、非业务请求、工具异常、循环调用和安全拦截等场景。
+> 我们把在线集成测试的数据集设计成只包含用户输入、标准 workflow、虚拟用户反馈和预期最终结果，不手写 actual trace。runner 会真实调用后端接口，遇到 HITL 状态时校验当前确认点的工具和参数，再自动提交确认、取消、补参数或修改参数等反馈。任务完成后从 TraceRecord 拉取真实执行轨迹，归一化为 actual_trace，再和 expected 比较。case 覆盖单工具查询、写操作确认、多工具依赖、缺参补充、HITL 改参数、上下文追问、非业务请求、工具异常、循环调用和安全拦截等场景。

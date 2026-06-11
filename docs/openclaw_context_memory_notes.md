@@ -2,7 +2,7 @@
 
 本文整理之前讨论过的 OpenClaw 相关知识点，重点放在 Agent 工程中最容易被面试追问的几个方向：上下文管理、短期记忆、长期记忆、Compaction、Skills、权限与安全、以及这些设计对当前 ERP Agent 项目的启发。
 
-说明：本文是面试学习与工程设计参考，不表示当前项目已经实现 OpenClaw 式完整长期记忆。当前项目已经删除长期记忆、`pinned_facts`、`retrieved_memory`、`memory_scope` 和模糊需求候选生成，只保留 session history、conversation summary、上下文改写校验、HITL、权限和评测。
+说明：本文是面试学习与工程设计参考，不表示当前项目已经实现 OpenClaw 式完整长期记忆。当前项目已经删除长期记忆、`pinned_facts`、`retrieved_memory`、`memory_scope` 和模糊需求候选生成，只保留 session history、conversation summary、上下文改写、HITL、权限和评测。
 
 ## 1. OpenClaw 是什么
 

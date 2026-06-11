@@ -118,7 +118,7 @@ end_date   = 2026-05-31
 | L1 规则引擎 | 不具备 | 当前没有请求入口级低延迟规则拦截层。 |
 | L2 多 prompt / 多数投票 | 不具备 | 当前不是多模型或多提示词投票架构。 |
 | 高危动作识别 | 部分具备 | `HallucinationGuard` 能基于方法和关键词识别部分风险，但没有完整策略引擎。 |
-| HITL 人工确认 | 具备一部分 | 工具执行前、缺参数、上下文改写澄清等场景可以进入人工确认。模糊需求候选确认已从当前版本删除。 |
+| HITL 人工确认 | 具备一部分 | 工具执行前、缺参数等场景可以进入人工确认。模糊需求候选确认和上下文改写 grounding 澄清已从当前版本删除。 |
 | 异常降级重试 | 部分具备 | 有部分异常处理和确认流，但没有系统化的降级策略。 |
 | Trace / Eval | 具备一部分 | 可以记录工具选择、参数、HITL、执行结果；本次新增 `operator_context_loaded`、`permission_check_started`、`permission_check_passed`、`permission_check_failed`、`permission_blocked` 等权限 trace 事件。 |
 

@@ -6,6 +6,9 @@ model_profiles:
       human_feedback_intent: v1
       slot_filling_intent: v1
       conversation_summary_compaction: v1
+      route_intent_explicit: v1
+      route_tool_chain_auditor: v1
+      route_risk_conservative: v1
 
   deepseek:
     prompt_versions:
@@ -14,6 +17,9 @@ model_profiles:
       human_feedback_intent: v1
       slot_filling_intent: v1
       conversation_summary_compaction: v1
+      route_intent_explicit: v1
+      route_tool_chain_auditor: v1
+      route_risk_conservative: v1
 
   qwen:
     prompt_versions:
@@ -22,3 +28,6 @@ model_profiles:
       human_feedback_intent: v1-qwen
       slot_filling_intent: v1
       conversation_summary_compaction: v1
+      route_intent_explicit: v1
+      route_tool_chain_auditor: v1
+      route_risk_conservative: v1

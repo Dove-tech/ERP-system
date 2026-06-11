@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models import LargeLanguageModel
-from guardrails import HallucinationGuard
+from guardrails import CrossPromptRouteGuard, HallucinationGuard
 from prompt.prompt_engineering import PromptRegistry, StructuredOutputParser
 from prompt.prompt_hub import create_prompt_hub
 
@@ -151,6 +151,61 @@ def run_hallucination_guard(case: Dict[str, Any], mode: str, hub, llm=None) -> T
     return passed, {"actual": result, "expected": expected}
 
 
+class ReplayRouteValidationLLM:
+    def __init__(self, outputs: Dict[str, str]):
+        self.outputs = outputs
+        self.queue = [outputs[prompt_id] for prompt_id in CrossPromptRouteGuard.PROMPT_IDS if prompt_id in outputs]
+
+    def chat_completions(self, prompt, model, temperature, top_p):
+        if self.queue:
+            return self.queue.pop(0)
+        if len(self.outputs) == 1:
+            return next(iter(self.outputs.values()))
+        return '{"decision":"clarify","reason":"no replay output matched prompt"}'
+
+
+def run_route_cross_validation(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
+    registry = PromptRegistry()
+    tool = SimpleNamespace(**case["tool"])
+    variables = {
+        "raw_query": case.get("query", ""),
+        "task_description": case.get("task_description", ""),
+        "tool_json": json.dumps(case.get("tool", {}), ensure_ascii=False, sort_keys=True),
+        "params_json": json.dumps(case.get("params", {}), ensure_ascii=False, sort_keys=True),
+    }
+    if mode == "render":
+        prompts = {
+            prompt_id: registry.render(prompt_id, getattr(hub, "model_name", DEFAULT_MODEL_NAME), variables)
+            for prompt_id in CrossPromptRouteGuard.PROMPT_IDS
+        }
+        expected_tokens = [case.get("query", ""), case["tool"].get("operationId", "")]
+        passed = all(
+            all(token in prompt for token in expected_tokens if token)
+            for prompt in prompts.values()
+        )
+        return passed, {"prompts": {key: value[:300] for key, value in prompts.items()}}
+
+    route_guard = CrossPromptRouteGuard(prompt_registry=registry)
+    llm_client = llm if mode == "online" else ReplayRouteValidationLLM(case.get("model_outputs", {}))
+    result = route_guard.validate(
+        tool=tool,
+        params=case.get("params", {}),
+        raw_query=case.get("query", ""),
+        task_desc=case.get("task_description", ""),
+        llm=llm_client,
+        model=getattr(hub, "model_name", DEFAULT_MODEL_NAME),
+        temperature=DEFAULT_MODEL_TEMPERATURE,
+        top_p=DEFAULT_MODEL_TOP_P,
+        risk_level=case.get("risk_level", ""),
+    )
+    expected = case["expected"]
+    passed = (
+        result.get("guardrail_action") == expected.get("guardrail_action")
+        and result.get("allow") == expected.get("allow")
+    )
+    return passed, {"actual": result, "expected": expected}
+
+
 def run_tool_chain(case: Dict[str, Any], mode: str, hub, llm=None) -> Tuple[bool, Dict[str, Any]]:
     actual = case.get("model_steps", [])
     expected = case["expected"].get("steps", [])
@@ -192,6 +247,7 @@ RUNNERS = {
     "task_classification": run_task_classification,
     "param_extraction": run_param_extraction,
     "hallucination_guard": run_hallucination_guard,
+    "route_cross_validation": run_route_cross_validation,
     "tool_chain": run_tool_chain,
     "slot_filling_intent": run_slot_filling_intent,
 }

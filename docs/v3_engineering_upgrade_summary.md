@@ -2,7 +2,7 @@
 
 本文档说明 `agent-copilot-hitl-v3-engineering` 相比 `agent-copilot-hitl-prompt-engineering` 的工程升级内容。
 
-本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：session 隔离、短期会话历史、长上下文压缩、上下文改写 grounding、幻觉治理、权限校验、trace、agent eval、成本与速度优化。
+本次改造目标不是做 V3 文档里的所有展望项，而是把面试包装中已经达成一致的核心能力补到工程里：session 隔离、短期会话历史、长上下文压缩、上下文改写、幻觉治理、权限校验、trace、agent eval、成本与速度优化。
 
 未实现的高级展望包括：LangGraph 重构、MCP Server Adapter、多 Agent 拆分、在线评测看板、长期记忆、模糊需求候选生成。
 
@@ -100,12 +100,13 @@ app.py
 - 如果前端没有传 `contexts`，工具模式会使用后端按 `user_id + session_id` 读取出的 recent messages 作为上下文改写输入。
 - Copilot 模式会把前端上下文和 session summary 组合成新的 `target_query`，再进入原有 API planning。
 - summary 更新使用 `prompt/prompt_registry/conversation_summary_compaction/v1.yaml`，只输出自然语言 conversation summary，不输出复杂 facts 结构。
-- 新增 `target_query` grounding 校验：从改写后的请求中抽取产品、订单、数量、交期、区域、生产线、供应商等关键实体，要求它们必须能在当前 query、recent messages 或会话摘要中找到来源。
-- 如果关键实体缺少来源，任务不会继续进入 API planning，而是写入 `pending_action=rewrite_grounding_clarify`，进入澄清/确认流程；用户确认后按候选改写继续，用户补充信息时按补充后的请求继续。
+- 当前版本已删除 `target_query` grounding 校验，不再用正则抽硬实体，也不再通过字符串匹配判断改写是否可信。
+- 删除原因是：硬实体覆盖不全、同义词和别名难以匹配、summary 不适合作为强事实库、LLM 置信度也不能作为可靠执行依据。
+- 现在上下文改写只作为辅助输入；如果下游参数不足，进入 `missing_params_clarify`；如果参数完整，仍然进入工具执行前 HITL 确认。
 
 面试表达：
 
-> 长上下文不是简单截断，而是把完整历史、rolling summary 和最近窗口分层使用。当前版本不把 summary 当作参数事实库，也不做长期记忆；工具参数仍然优先来自当前 query 和最近原始上下文。对 LLM 改写出的 `target_query` 还要做来源校验，关键实体没有当前上下文或摘要证据时先澄清，不能带着幻觉进入工具调用。
+> 长上下文不是简单截断，而是把完整历史、rolling summary 和最近窗口分层使用。当前版本不把 summary 当作参数事实库，也不做长期记忆；工具参数仍然优先来自当前 query 和最近原始上下文。上下文改写只做辅助，真正阻断执行的是缺参澄清、参数校验、权限校验和工具执行前 HITL。
 
 ## 5. 已删除能力与未来展望
 
@@ -285,7 +286,7 @@ docs/user_intent_enhancement_upgrade.md
 docs/integration_testing.md
 ```
 
-`docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、上下文改写澄清、工具执行确认、pending_action 分流和新增 eval 覆盖。当前版本已删除模糊需求反馈识别。
+`docs/user_intent_enhancement_upgrade.md` 专门描述用户意图增强改造，包括参数缺失补全、工具执行确认、pending_action 分流和新增 eval 覆盖。当前版本已删除模糊需求反馈识别和上下文改写 grounding 澄清。
 
 `docs/integration_testing.md` 专门描述工作流级集成测试，包括 case 数据结构、执行命令和各项指标的计算方式。
 

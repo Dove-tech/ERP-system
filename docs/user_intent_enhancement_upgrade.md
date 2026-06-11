@@ -2,7 +2,7 @@
 
 本文档描述当前 `agent-copilot-hitl-v3-engineering` 在 HITL 用户反馈理解上的保留能力。
 
-当前版本不做全局“是否调用工具”的意图识别，也已经删除“模糊需求澄清”能力。系统只在已有任务进入等待状态后，根据 `pending_action` 判断用户本次反馈应该如何处理。
+当前版本不做全局“是否调用工具”的意图识别，也已经删除“模糊需求澄清”和“上下文改写 grounding 澄清”。系统只在已有任务进入等待状态后，根据 `pending_action` 判断用户本次反馈应该如何处理。
 
 ## 1. 当前边界
 
@@ -22,6 +22,7 @@
 处理“老样子”“按上次方案”这类模糊需求候选
 跨 session 长期记忆召回
 从长期记忆中自动恢复订单、供应商、产品等参数
+用正则或置信度判断上下文改写是否可信
 ```
 
 这样设计的原因是：ERP 工具调用涉及权限、参数校验、HITL 和审计。当前版本优先保证等待状态机可解释、可测试，而不是把所有自然语言理解能力都塞进一个复杂意图识别模块。
@@ -34,7 +35,6 @@
 
 ```text
 missing_params_clarify      等待用户补充工具必填参数
-rewrite_grounding_clarify   等待用户澄清上下文改写结果
 tool_execution_confirm      等待用户确认是否执行工具调用
 ```
 
@@ -42,7 +42,6 @@ tool_execution_confirm      等待用户确认是否执行工具调用
 
 ```text
 missing_params_clarify -> 参数补全反馈处理器
-rewrite_grounding_clarify -> 上下文改写澄清处理器
 tool_execution_confirm -> 工具执行确认处理器
 ```
 
@@ -50,9 +49,10 @@ tool_execution_confirm -> 工具执行确认处理器
 
 ```text
 ambiguity_confirm
+rewrite_grounding_clarify
 ```
 
-也就是说，当前不再支持“系统根据长期记忆生成模糊需求候选方案，然后等待用户确认候选”的链路。
+也就是说，当前不再支持“系统根据长期记忆生成模糊需求候选方案，然后等待用户确认候选”的链路，也不再因为上下文改写后的实体没有通过正则匹配就进入专门澄清分支。
 
 ## 3. 参数不足时请求用户补充
 
@@ -131,40 +131,9 @@ LLM 只负责把用户回复转为结构化字段。参数合并、类型转换�
 进入 tool_execution_confirm
 ```
 
-## 4. 上下文改写澄清
+## 4. 工具执行确认
 
-`rewrite_grounding_clarify` 用于处理这种情况：
-
-```text
-用户当前请求依赖上下文
--> 系统尝试改写成完整请求
--> 改写后的关键实体在当前 query、recent messages 或 summary 中找不到来源
--> 进入澄清，不直接调用工具
-```
-
-例子：
-
-```text
-历史中同时出现了 A 供应商和 B 供应商。
-用户：把它导出来。
-系统改写：导出 B 供应商的对账单。
-grounding 发现“B 供应商”来源不够稳。
-系统：请确认是否导出 B 供应商的对账单，或补充正确供应商。
-```
-
-用户反馈处理规则：
-
-```text
-短确认：按 candidate_query 继续
-取消：终止任务
-其他输入：拼接为用户澄清并重新规划
-```
-
-这个分支不是长期记忆，也不是模糊需求候选生成。它只校验“上下文改写是否有来源”。
-
-## 5. 工具执行确认
-
-`tool_execution_confirm` 是最终工具执行前的确认阶段。
+`tool_execution_confirm` 是工具执行前的确认阶段。当前工程所有工具调用前都会进入确认，不只限制写接口。
 
 当前支持：
 
@@ -189,7 +158,39 @@ unclear -> 继续等待确认
 unclear
 ```
 
-不会直接把参数改成 50 后执行。这样更保守，避免最终确认阶段混入参数变更导致误执行。
+不会直接把参数改成 50 后执行。这样更保守，避免最终确认阶段混入参数变更导致误执行。需要支持“确认阶段改参数”时，应先把它作为明确的新需求进入重新规划和重新确认，而不是在确认处理器里静默改参。
+
+## 5. 上下文改写的当前处理
+
+当前仍保留上下文改写，但它只是把 bounded context 显式拼到下游工具选择和参数抽取输入中：
+
+```text
+用户当前请求
++ conversation summary
++ recent messages
+-> target_query
+-> API planning
+```
+
+已经删除的旧方案是：
+
+```text
+抽取 target_query 中的硬实体
+-> 用字符串匹配检查这些实体是否出现在 query / recent messages / summary
+-> 不通过则进入 rewrite_grounding_clarify
+```
+
+删除原因：
+
+```text
+硬实体抽取覆盖不全，容易漏掉复杂业务表达
+字符串匹配难以处理同义词、别名、简称和跨句指代
+LLM 自报置信度不能作为可靠执行依据
+summary 本身是压缩文本，不适合作为强参数事实库
+该分支增加了状态机复杂度，但评测闭环不稳定
+```
+
+当前如果上下文改写后仍然缺少必填参数，系统会进入 `missing_params_clarify`。如果参数完整，也仍然会进入 `tool_execution_confirm`，由用户确认本次工具和参数是否可以执行。上下文改写不再单独触发 HITL。
 
 ## 6. 已删除能力
 
@@ -201,6 +202,8 @@ prompt/prompt_registry/ambiguity_feedback_intent/v1.yaml
 prompt/evals/datasets/ambiguity_resolution.json
 prompt/evals/datasets/ambiguity_feedback_intent.json
 pending_action=ambiguity_confirm
+pending_action=rewrite_grounding_clarify
+ContextManager.validate_query_grounding
 ```
 
 删除原因：
@@ -208,55 +211,34 @@ pending_action=ambiguity_confirm
 ```text
 依赖长期记忆和复杂候选 grounding
 评测成本高
-与当前“只做上下文压缩，不做长期记忆”的方案不一致
-容易在面试中被追问长期记忆来源、事实可靠性和候选解释正确率
+当前工程没有长期记忆事实库
+旧上下文 grounding 依赖正则和字符串匹配，不满足工业级可靠性要求
+容易给面试和文档造成“已经有强实体溯源”的误导
 ```
 
-当前遇到“老样子”“按上次方案”这类表达时，不再自动生成候选方案。系统应通过缺参、上下文改写澄清或工具参数校验进入更保守的澄清路径。
+## 7. 评测建议
 
-## 7. Eval 覆盖
-
-保留的 eval 数据集：
+当前应重点评测：
 
 ```text
-prompt/evals/datasets/human_feedback_intent.json
-prompt/evals/datasets/slot_filling_intent.json
+missing_params_clarify 是否正确触发
+用户补参是否正确合并
+工具执行确认是否一定出现
+确认、取消、不明确反馈是否被正确处理
+确认阶段是否会错误执行参数变更
+上下文追问是否能在最近消息和 summary 辅助下选对工具、抽对参数
 ```
 
-覆盖场景：
+不再评测：
 
 ```text
-工具执行确认：confirm / abort / unclear
-缺参补充：provide_info / abort / unclear
-混合反馈：可以继续，但数量改成 50，供应商是 2
-无效反馈：你看着办吧
+rewrite_grounding_pass_rate
+rewrite_grounding_clarify 命中率
+硬实体字符串来源匹配准确率
 ```
 
-验证命令：
+## 8. 面试表达
 
-```powershell
-python -m py_compile app.py apis\api_planning_hub.py prompt\prompt_engineering.py prompt\evals\runner.py
-python -m prompt.evals.runner --task human_feedback_intent --mode replay --model qwen-max
-python -m prompt.evals.runner --task slot_filling_intent --mode replay --model qwen-max
-```
+可以这样讲：
 
-## 8. 未来展望
-
-长期记忆和模糊需求候选可以作为后续方向，但不属于当前版本。
-
-未来如果重新引入，需要同时补齐：
-
-```text
-长期记忆的存储模型
-记忆写入来源和审批策略
-记忆过期与冲突处理
-候选方案 grounding
-模糊需求候选确认 HITL
-对应 eval 和 online integration case
-```
-
-面试表达时应说清楚：
-
-```text
-当前版本没有上线长期记忆和模糊需求候选生成，只保留短期 session history、conversation summary 和 pending 状态下的反馈解析。长期记忆属于后续规划，必须等事实来源、权限边界和评测体系成熟后再引入。
-```
+> 我们后来删掉了一个上下文改写 grounding 分支。原因是它依赖硬实体正则和字符串匹配，看起来像“参数来源校验”，但实际很难覆盖同义词、别名和复杂指代，误拦截和漏拦截都不好评测。当前版本保留上下文改写作为辅助输入，把不确定性放到更可控的缺参澄清、全工具 HITL、权限校验、参数校验和 trace/eval 中处理。这个取舍比堆一个不稳定的置信度判断更适合生产项目。

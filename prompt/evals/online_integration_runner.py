@@ -116,22 +116,16 @@ def _pending_params(pending_action: str, pending_payload: Dict[str, Any]) -> Dic
         if missing:
             params["missing"] = missing
         return params
-    if pending_action == "rewrite_grounding_clarify":
-        return {}
     return {}
 
 
 def _pending_virtual_tool(pending_action: str) -> str:
     if pending_action == "missing_params_clarify":
         return "ask_user_clarification"
-    if pending_action == "rewrite_grounding_clarify":
-        return "ask_user_clarification"
     return "ask_user_confirmation"
 
 
 def _pending_operation(pending_action: str, pending_payload: Dict[str, Any]) -> str:
-    if pending_action == "rewrite_grounding_clarify":
-        return "ask_user_clarification"
     return str(pending_payload.get("operation_id") or pending_payload.get("tool_name") or "")
 
 
@@ -163,10 +157,7 @@ def _append_trace_events(
         event_type = _event_type(event)
         payload = _event_payload(event)
 
-        if event_type == "rewrite_grounding_failed":
-            _append_call_once(calls, seen_virtual, "ask_user_clarification", {})
-
-        elif event_type == "missing_params_need_user":
+        if event_type == "missing_params_need_user":
             params = dict(payload.get("known_params") or {})
             missing = _missing_names(payload.get("missing_params"))
             if missing:
@@ -208,12 +199,6 @@ def _append_trace_events(
             )
 
         elif event_type == "missing_params_aborted":
-            _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "abort", handled=True)
-
-        elif event_type == "rewrite_grounding_resolved":
-            _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "provide_info", handled=True)
-
-        elif event_type == "rewrite_grounding_aborted":
             _apply_hitl_intent(hitl_events, str(payload.get("feedback") or ""), "abort", handled=True)
 
         elif event_type == "tool_invocation_started":

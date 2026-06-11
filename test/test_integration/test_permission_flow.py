@@ -49,6 +49,9 @@ class FakeGenerateTaskHub:
 
 
 class FakeHallucinationGuard:
+    def classify_tool_risk(self, tool):
+        return getattr(tool, "risk_level", "read")
+
     def validate_tool_call(self, tool, params, query=""):
         return {
             "allow": True,
@@ -58,6 +61,16 @@ class FakeHallucinationGuard:
             "param_sources": {},
             "hallucination_type": "",
         }
+
+
+class FakeCrossPromptRouteGuard:
+    def __init__(self, result=None):
+        self.result = result or {"allow": True, "guardrail_action": "allow", "skipped": True}
+        self.called = False
+
+    def validate(self, **kwargs):
+        self.called = True
+        return self.result
 
 
 class FakeToolUseHub:
@@ -76,6 +89,7 @@ def make_planning_hub(params):
     hub.param_extraction_hub = FakeParamExtractionHub(params)
     hub.generate_task_hub = FakeGenerateTaskHub()
     hub.hallucination_guard = FakeHallucinationGuard()
+    hub.cross_prompt_route_guard = FakeCrossPromptRouteGuard()
     hub.tool_use_hub = FakeToolUseHub()
     return hub
 
@@ -181,6 +195,47 @@ class PermissionFlowIntegrationTest(unittest.TestCase):
         self.assertEqual(result["code"], TASK_SUCCESS_CODE)
         self.assertEqual(result["permission"]["action"], "permission_passed")
         self.assertTrue(hub.generate_task_hub.judge_called)
+
+    def test_tool_check_blocks_high_risk_route_when_cross_prompt_rejects(self):
+        context = OperatorContext(
+            tool_permissions=["finance.reconciliation.export"],
+            allowed_regions=["华东区"],
+        )
+        task = make_task(context)
+        hub = make_planning_hub({"region": "华东区"})
+        hub.cross_prompt_route_guard = FakeCrossPromptRouteGuard({
+            "allow": False,
+            "guardrail_action": "block",
+            "skipped": False,
+            "reason": "用户只要求导出，没有要求发送邮件",
+            "votes": [
+                {"prompt_id": "route_intent_explicit", "decision": "clarify", "reason": "缺少发送意图"},
+                {"prompt_id": "route_tool_chain_auditor", "decision": "block", "reason": "工具扩大请求"},
+            ],
+            "vote_summary": {"allow": 0, "clarify": 1, "block": 1, "total": 2},
+        })
+        tool = make_tool(
+            operationId="sendEmail",
+            name_for_human="发送邮件",
+            required_permissions=["finance.reconciliation.export"],
+            risk_level="external_send",
+        )
+
+        result = hub._tool_check(
+            tool,
+            "发送对账单邮件",
+            "帮我导出上个月华东区大客户的对账单",
+            operator_context=context,
+            task=task,
+        )
+
+        self.assertEqual(result["code"], TASK_ERROR_CODE)
+        self.assertEqual(result["result"], "route_cross_validation")
+        self.assertTrue(hub.cross_prompt_route_guard.called)
+        self.assertIn(
+            "route_cross_validation_decided",
+            [event["event_type"] for event in hub.trace_manager.events],
+        )
 
     def test_before_tool_invoke_rechecks_permission_and_blocks_tampered_params(self):
         context = OperatorContext(

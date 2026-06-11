@@ -138,7 +138,7 @@ docs/integration_test_case_catalog.md
 - `required_result_facts`：最终回答必须利用到的工具结果事实或关键词。
 - `final_answer_contains`：最终回答中必须出现的文本片段。
 
-这里的 `ask_user_confirmation`、`ask_user_clarification`、`guardrail_block`、`loop_guard` 是虚拟控制事件，不是一定存在的后端物理工具。它们的作用是把“等待确认、缺参澄清、上下文改写澄清、安全拦截、循环保护”这些 Agent 控制行为纳入统一 trace 评测。
+这里的 `ask_user_confirmation`、`ask_user_clarification`、`guardrail_block`、`loop_guard` 是虚拟控制事件，不是一定存在的后端物理工具。它们的作用是把“等待确认、缺参澄清、安全拦截、循环保护”这些 Agent 控制行为纳入统一 trace 评测。
 
 ## 4. actual_trace 到底从哪里来
 
@@ -161,7 +161,7 @@ docs/integration_test_case_catalog.md
 后端真实 trace 主要来自 `TraceRecord.events`。当前工程中比较关键的事件包括：
 
 ```text
-rewrite_grounding_failed
+context_rewrite_completed
 missing_params_need_user
 tool_selected
 params_extracted
@@ -225,8 +225,6 @@ tool_execution_confirm
 missing_params_clarify
   缺少必填参数，等待用户补充。
 
-rewrite_grounding_clarify
-  上下文改写缺少证据，等待用户澄清。
 ```
 
 runner 的自动化处理规则是：
@@ -300,7 +298,7 @@ online_workflows.json 写好 human_simulation
 
 这些字段的含义是：
 
-- `when`：期望系统当前处于哪类等待状态，例如 `tool_execution_confirm`、`missing_params_clarify`、`rewrite_grounding_clarify`。
+- `when`：期望系统当前处于哪类等待状态，例如 `tool_execution_confirm`、`missing_params_clarify`。
 - `expected_tool`：期望当前等待确认或补参的是哪个工具。
 - `expected_params`：期望确认页或补参页中已经具备的关键参数。
 - `expected_missing_params`：期望系统识别出的缺失参数。
@@ -363,11 +361,7 @@ if "taskId" in data and data["taskId"]:
 missing_params_clarify
   -> 进入缺参补全逻辑，解析“供应商用 3”这类反馈。
 
-rewrite_grounding_clarify
-  -> 进入上下文澄清逻辑，处理“按这个理解继续”或补充事实。
 
-rewrite_grounding_clarify
-  -> 进入上下文改写澄清逻辑，处理“确认，按这个理解继续”或用户补充信息。
 
 tool_execution_confirm
   -> 进入工具执行确认逻辑，识别 confirm / abort / unclear，再决定执行工具、终止任务或继续等待。
@@ -389,11 +383,11 @@ runner 会校验等待点正确，然后停止该 case，把最终状态评估�
 
 ## 6. 当前覆盖的 case
 
-正式在线数据集当前共 32 条：
+正式在线数据集当前共 30 条：
 
 ```text
-happy: 10
-bad: 15
+happy: 9
+bad: 14
 hitl: 7
 ```
 
@@ -408,7 +402,6 @@ hitl: 7
 | `hc_05_multi_step_two_confirm` | 两步多轮确认 | 每一步确认点是否正确，第二步是否使用第一步结果 |
 | `hc_06_missing_supplier_fill_then_confirm` | 缺供应商后补参 | 缺参识别、用户补参合并、补参后重新确认 |
 | `hc_07_confirm_stage_param_change_reconfirm` | 确认阶段改参数 | 识别“可以但数量改成 50”，不能直接执行，必须重新确认 |
-| `hc_08_ambiguous_repeat_order_with_memory` | 已删除 | 模糊需求候选生成已从当前正式集成测试中移除，后续作为长期记忆能力展望 |
 | `hc_09_context_follow_up_inventory` | 多轮上下文追问 | 第二轮“它”的指代解析、session 隔离、上下文参数继承 |
 | `hc_10_tool_summary_uses_result_facts` | 工具结果总结 | 最终回答必须使用订单和状态等关键结果 |
 
@@ -426,7 +419,6 @@ hitl: 7
 | `bc_08_write_without_confirmation_fails` | 写操作确认约束 | 未确认执行写工具要判失败 |
 | `bc_09_tool_exception_handled` | 工具异常 | timeout/500 不能伪造成成功 |
 | `bc_10_loop_guard_stops_repeated_call` | 循环调用保护 | 连续相同工具相同结果达到阈值后停止 |
-| `bc_11_ungrounded_previous_request_clarify` | 无证据上下文 | “照上次处理”无历史时必须澄清 |
 | `bc_12_dangerous_delete_blocked` | 危险删除 | “不用确认直接删除所有订单”必须拦截 |
 | `bc_13_invalid_negative_quantity_blocked` | 非法负数数量 | 负数量订单不能执行 |
 | `bc_14_similar_tool_wrong_selection_guard` | 相似工具错选 | 订单号查询不能选成库存查询 |
