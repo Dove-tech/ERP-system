@@ -1061,7 +1061,24 @@ def process_human_feedback(task_id, human_feedback):
                                         model_base_url, model_api_key, executor)
 
         # 处理人类反馈
-        api_planning_hub.api_planning_handle_human_feedback(task, human_feedback)
+        used_langgraph_resume = False
+        try:
+            from utils.config import use_langgraph_workflow
+            if use_langgraph_workflow:
+                from workflows import ERPAgentLangGraphWorkflow
+                workflow = ERPAgentLangGraphWorkflow(api_planning_hub)
+                if workflow.is_available:
+                    used_langgraph_resume = True
+                    workflow.resume_with_human_feedback(task, human_feedback)
+                else:
+                    api_planning_hub.api_planning_handle_human_feedback(task, human_feedback)
+            else:
+                api_planning_hub.api_planning_handle_human_feedback(task, human_feedback)
+        except Exception as exc:
+            logger.error(f"LangGraph resume failed: {exc}\n{traceback.format_exc()}")
+            if used_langgraph_resume:
+                raise
+            api_planning_hub.api_planning_handle_human_feedback(task, human_feedback)
         updated_task = taskManager.get_task_by_id(task_id)
         if updated_task is not None and updated_task.status == TASK_STATUS_FINISH:
             _persist_assistant_memory(updated_task, updated_task.changed_query, updated_task.system_output)

@@ -26,6 +26,7 @@ model_base_url = os.getenv("model_base_url")
 sim_api_key = os.getenv("sim_api_key")
 SECRET_KEY = os.getenv('SECRET_KEY', 'zhipocopilot@zhipo.com')
 JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
+use_langgraph_workflow = int(os.getenv("use_langgraph_workflow", "1"))
 
 local_mode = int(os.getenv("local_mode", "1"))
 if local_mode:

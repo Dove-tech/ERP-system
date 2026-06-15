@@ -853,6 +853,36 @@ class ApiPlanningHub:
         return "unclear"
 
     def apis_planning(self, query, task_id):
+        try:
+            from utils.config import use_langgraph_workflow
+            if use_langgraph_workflow:
+                from workflows import ERPAgentLangGraphWorkflow
+                workflow = ERPAgentLangGraphWorkflow(self)
+                if workflow.is_available:
+                    task = self.task_manager.get_task_by_id(task_id)
+                    self.trace_manager.add_event(
+                        task.trace_id if task is not None else "",
+                        "langgraph_workflow_started",
+                        {"query": query, "task_id": task_id},
+                    )
+                    result = workflow.run(query, task_id)
+                    task = self.task_manager.get_task_by_id(task_id)
+                    self.trace_manager.add_event(
+                        task.trace_id if task is not None else "",
+                        "langgraph_workflow_finished",
+                        {
+                            "task_id": task_id,
+                            "final_status": result.get("final_status"),
+                            "next_action": result.get("next_action"),
+                        },
+                    )
+                    return result
+                logger.warning("LangGraph workflow enabled but langgraph is not installed; falling back to legacy planning.")
+        except Exception as exc:
+            logger.error(f"LangGraph workflow failed, falling back to legacy planning: {exc}\n{traceback.format_exc()}")
+        return self._legacy_apis_planning(query, task_id)
+
+    def _legacy_apis_planning(self, query, task_id):
         """
         多API规划函数，用于处理单个或多个查询的API调用流程。
         此函数接收一个查询语句，根据查询判断是否为单任务。若为单任务，直接调用单API规划函数；
