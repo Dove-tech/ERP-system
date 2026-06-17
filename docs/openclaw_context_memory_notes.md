@@ -549,8 +549,400 @@ summary 类似 OpenClaw 的 Compaction，只用于帮助模型理解前文，不
 这也是为什么我把重点放在 Tool Registry、RAG 工具选择、HITL、权限校验、trace 和集成评测上，而不是把项目包装成一个全能长期记忆 Agent。
 ```
 
-## 14. 参考资料
+## 14. OpenClaw 记忆系统与上下文系统的结构和机制
 
+这一节按 OpenClaw 官方文档中能确认的结构来整理。核心结论是：OpenClaw 不是只有一个简单的 summary，也不是单一的向量库记忆。它把信息分成了多个层次：
+
+```text
+session transcript
++ context window
++ context engine
++ memory files
++ memory index/search
++ active memory
++ compaction / pruning
+```
+
+这些层次解决的问题不同，可信度也不同。
+
+### 14.1 总体分层
+
+可以把 OpenClaw 的上下文与记忆系统理解成四层：
+
+```text
+第一层：当前上下文窗口
+每次调用模型时真正塞进 prompt 的内容。
+
+第二层：session transcript
+当前会话的完整消息、工具调用和工具结果记录，保存在本地文件中。
+
+第三层：持久化记忆文件
+例如 MEMORY.md、每日 memory 文件、项目规则文件等，用来保存比当前会话更持久的信息。
+
+第四层：记忆索引与主动记忆
+对 memory 文件建立索引，支持搜索；必要时由 active memory 在回复前检索或注入相关记忆。
+```
+
+这四层的关系是：
+
+```text
+完整历史不等于当前 prompt。
+长期记忆不等于当前事实。
+summary 不等于可靠数据库。
+context engine 负责决定当前这一轮模型到底能看到什么。
+```
+
+### 14.2 Session Transcript：会话原始记录
+
+OpenClaw 会为不同来源的对话维护 session。常见入口包括：
+
+```text
+DM / 私聊
+group / 群聊
+cron / 定时任务
+webhook / 外部回调
+```
+
+session 的作用是保存当前会话的完整过程，包括：
+
+```text
+用户消息
+assistant 消息
+工具调用
+工具结果
+系统事件
+上下文压缩后的 compacted entry
+```
+
+这层更像“审计日志 + 原始会话存档”，不是每次都完整进入 prompt。
+
+工程上可以理解为：
+
+```text
+session transcript 负责完整保存。
+context window 负责选择性加载。
+compaction 负责把较早历史压缩后继续推进任务。
+```
+
+这和当前 ERP Agent 中的 `SessionMemory`、`TraceRecord` 很像：完整历史和 trace 应该保留，但不能每轮都全量塞给模型。
+
+### 14.3 Context Window：模型当前能看到的工作集
+
+OpenClaw 的 context window 是每次模型调用前拼出来的上下文工作集。它通常包含：
+
+```text
+system prompt
+agent identity / persona
+project instructions
+memory files 中的关键内容
+当前 session 的最近消息
+必要的工具调用结果
+可用工具或 skills 的说明
+当前任务状态
+当前用户输入
+```
+
+这个窗口受模型上下文长度限制，所以它必须被管理。OpenClaw 文档中也提供了查看上下文和 token 使用情况的命令，例如：
+
+```text
+/status
+/usage tokens
+/context list
+/context detail
+/context map
+```
+
+这些命令的价值在于：开发者可以看到当前上下文里到底装了什么，token 压力来自哪里，而不是只凭感觉调 prompt。
+
+对当前 ERP Agent 的启发是：
+
+```text
+不应该只记录最终回答。
+应该记录每次 prompt 的组成、各部分 token、是否触发 compaction、压缩前后 token。
+```
+
+这有利于后续排查：
+
+```text
+是工具描述太长？
+是 RAG 召回太多？
+是工具结果太大？
+还是 session 历史太长？
+```
+
+### 14.4 Context Engine：上下文构造引擎
+
+OpenClaw 官方文档把上下文构造抽象为 context engine。它负责管理上下文生命周期，大致包括：
+
+```text
+ingest：接收新消息、工具结果、外部内容
+assemble：组装本轮要发给模型的 prompt/messages
+compact：当上下文接近窗口上限时执行压缩
+afterTurn：模型回复或工具调用结束后做状态更新
+```
+
+这说明 OpenClaw 的上下文不是简单的：
+
+```text
+messages.append(new_message)
+```
+
+而是一个可插拔的上下文管理过程：
+
+```text
+输入进入 session
+-> context engine 决定哪些内容进入当前 prompt
+-> 模型执行
+-> 工具结果回写
+-> 必要时压缩或裁剪
+-> 下一轮继续
+```
+
+对当前项目的启发是：如果要把 summary 改成 token 触发，就不应该只在任务结束后更新 summary，而应该在关键 LLM 调用前做 context budget check：
+
+```text
+准备 prompt parts
+-> 估算 token
+-> 判断是否超过 soft budget
+-> 必要时 compaction
+-> 重新组装 prompt
+-> 调用模型
+```
+
+### 14.5 Memory Files：持久化记忆文件
+
+OpenClaw 文档中提到多类持久化文件。它们并不完全等价，但都属于“比当前 prompt 更持久的上下文来源”。
+
+常见类型包括：
+
+```text
+MEMORY.md
+长期或稳定记忆，例如用户偏好、长期约束、稳定背景。
+
+memory/YYYY-MM-DD.md
+按日期保存的每日记忆或工作记录。
+
+SOUL.md / IDENTITY.md / USER.md
+偏身份、人格、用户画像、运行方式的说明。
+
+AGENTS.md / TOOLS.md / BOOTSTRAP.md
+偏项目规则、工具说明、启动上下文和运行约束。
+```
+
+需要注意的是，这些文件不是“自动可信事实库”。它们进入上下文时仍然要受边界约束：
+
+```text
+文件内容可能过期。
+文件内容可能与当前 query 冲突。
+文件内容可能不适合直接用于工具参数。
+外部写入的内容可能有 prompt injection 风险。
+```
+
+所以持久化文件更适合保存：
+
+```text
+长期偏好
+稳定规则
+项目约定
+低风险背景
+用户明确要求保存的事实
+```
+
+不适合保存：
+
+```text
+动态库存
+一次性订单参数
+临时供应商选择
+未经确认的模型推理结果
+高风险工具执行结论
+```
+
+### 14.6 Memory Index / Search：记忆索引与召回
+
+OpenClaw 的记忆系统不只是把文件全量塞进 prompt。官方文档中提到，它会对 memory 目录建立索引，并支持搜索工具读取相关记忆。
+
+典型机制可以理解为：
+
+```text
+memory files
+-> chunk
+-> index
+-> query-time search
+-> relevant memory snippets
+-> 注入当前上下文
+```
+
+公开文档中提到的索引能力包括全文搜索和向量/混合召回一类机制。工程意义是：
+
+```text
+长记忆不应该每轮全量进入 prompt。
+应该按当前任务相关性召回。
+召回结果需要和当前 query、权限、安全策略一起判断。
+```
+
+这和 RAG 的思想类似，但对象不是业务文档，而是 agent 自己的 memory 文件、历史笔记或工作记录。
+
+### 14.7 Active Memory：回复前的主动记忆检索
+
+OpenClaw 文档中还提到 active memory 机制。它可以理解为在主模型回复前，额外运行一个记忆相关流程，用来判断是否需要从记忆中取出内容注入当前上下文。
+
+简化流程：
+
+```text
+用户输入
+-> active memory 判断是否需要查记忆
+-> 搜索 memory 文件或索引
+-> 把相关结果作为隐藏上下文注入
+-> 主 Agent 再进行正常推理和工具调用
+```
+
+这里要注意两点：
+
+第一，active memory 不是普通 summary。它更接近“按需检索长期记忆”。
+
+第二，active memory 注入的内容也不能天然视为强事实，尤其在工具调用和高风险动作中仍然需要：
+
+```text
+权限校验
+参数校验
+当前 query 优先
+HITL
+trace 记录
+```
+
+对 ERP Agent 来说，active memory 可以作为未来方向，但不应该直接用于自动补全业务参数。
+
+### 14.8 Compaction：上下文压缩
+
+OpenClaw 的 compaction 解决的是当前上下文窗口过长的问题。
+
+它的基本机制是：
+
+```text
+上下文接近模型窗口上限
+-> 较早消息被压缩成摘要
+-> 最近消息保留原文
+-> 工具调用/工具结果关系尽量保持完整
+-> 压缩后的摘要作为 compacted entry 写回 session
+-> 后续继续执行当前任务
+```
+
+重点是：
+
+```text
+compaction 是 session 级上下文管理。
+compaction 不是长期记忆。
+compaction 不应该替代原始 transcript。
+compaction 不应该直接作为工具参数事实库。
+```
+
+OpenClaw 的 compaction 思路更接近 token pressure 触发，而不是固定按几轮对话触发。也就是说，真正要关心的是：
+
+```text
+当前 prompt 是否接近上下文窗口上限？
+工具结果是否太长？
+recent messages 是否挤占了必要的系统规则和工具描述？
+```
+
+这也是为什么当前 ERP Agent 如果要继续优化 summary，应该从“按消息条数触发”升级为“按 token budget 触发”。
+
+### 14.9 Pruning：工具结果裁剪
+
+除了 compaction，OpenClaw 类系统还需要 pruning。二者不同：
+
+```text
+compaction：把较早对话压缩成摘要。
+pruning：把不再需要的旧工具结果从当前 prompt 中移除或替换成摘要。
+```
+
+Agent 的上下文爆炸很多时候不是因为聊天历史，而是因为工具结果。
+
+例如：
+
+```text
+浏览器抓取一整页网页
+读取一个大文件
+返回一大段邮件列表
+执行命令输出几千行日志
+```
+
+这些内容不能一直原文留在 prompt 中。更合理的做法是：
+
+```text
+完整工具结果保存在 transcript 或外部存储。
+当前 prompt 中只保留摘要、关键片段和 result_id。
+如果后续需要细节，再按 result_id 或文件路径重新读取。
+```
+
+这对 ERP Agent 很有借鉴意义，因为 ERP 工具也可能返回大量库存明细、订单列表、对账差异和供应商记录。
+
+### 14.10 一次请求的完整机制
+
+把上述机制串起来，OpenClaw 类 Agent 一次请求大致是：
+
+```text
+1. 用户输入进入某个 session。
+2. 原始消息写入 session transcript。
+3. active memory 根据配置决定是否检索长期记忆。
+4. context engine 读取系统规则、记忆文件、最近消息、工具结果和当前 query。
+5. context engine 估算 token 并组装 context window。
+6. 如果上下文过长，触发 compaction 或 pruning。
+7. 模型基于当前 context window 进行推理。
+8. 如果需要工具，调用工具并把结果写回 transcript。
+9. 工具结果过大时进入 observation pruning 或摘要化。
+10. 模型继续推理或返回用户。
+11. 重要信息可以被写入 memory 文件，但应有策略和边界。
+```
+
+这套机制可以简化成一句话：
+
+```text
+session 保存完整过程，context engine 选择当前工作集，memory 提供跨会话背景，compaction/pruning 控制 token 压力。
+```
+
+### 14.11 对当前 ERP Agent 的直接启发
+
+当前项目不需要照搬 OpenClaw 的完整记忆系统，但可以借鉴以下设计：
+
+```text
+1. 保留完整 session history 和 trace，而不是只保留 summary。
+2. 把 summary 定位为 compaction，不作为长期记忆和参数事实库。
+3. 将 compaction 从“按消息条数触发”升级为“按 token budget 触发”。
+4. 对工具大结果做 observation compression，只保留摘要和 result_id。
+5. 增加 context token trace，记录 prompt 各部分 token 占比。
+6. 长期记忆只作为未来方向，不直接用于 ERP 写操作参数补全。
+```
+
+不建议当前直接照搬：
+
+```text
+1. 自动把用户历史行为写成长期偏好。
+2. 通过长期记忆直接补全供应商、订单、金额、区域等业务参数。
+3. 把 memory search 结果直接用于写操作。
+4. 把 active memory 注入内容视为强事实。
+5. 在没有 eval 的情况下上线复杂 memory agent。
+```
+
+面试表达可以这样讲：
+
+```text
+OpenClaw 的记忆系统给我的启发是，记忆不是一个单点能力，而是一套分层上下文工程。session transcript 负责完整保存，context engine 负责决定当前 prompt 看什么，compaction 和 pruning 负责控制 token，memory files 和 memory search 负责跨会话背景。
+
+我的 ERP Agent 没有照搬它的长期记忆，因为 ERP 参数有权限、时效和写操作风险。我主要借鉴的是 session-scoped memory、conversation compaction 和 trace 可观测性。后续如果继续做，会优先把 compaction 改成 token budget 触发，并对工具结果做 observation compression。
+```
+
+## 15. 参考资料
+
+- OpenClaw Docs: Context overview. https://docs.openclaw.ai/concepts/context/context-overview
+- OpenClaw Docs: Context engines. https://docs.openclaw.ai/concepts/context/context-engines
+- OpenClaw Docs: Context compaction. https://docs.openclaw.ai/concepts/context/context-compaction
+- OpenClaw Docs: Context pruning. https://docs.openclaw.ai/concepts/context/context-pruning
+- OpenClaw Docs: Memory. https://docs.openclaw.ai/concepts/memory
+- OpenClaw Docs: Memory files. https://docs.openclaw.ai/concepts/memory-files
+- OpenClaw Docs: Memory tools. https://docs.openclaw.ai/concepts/memory-tools
+- OpenClaw Docs: Active memory. https://docs.openclaw.ai/concepts/active-memory
+- OpenClaw Docs: Sessions. https://docs.openclaw.ai/concepts/session
 - TechRadar: What is OpenClaw? Agentic AI that can automate any task. https://www.techradar.com/pro/what-is-openclaw
 - TechRadar: What are OpenClaw Skills? A detailed guide. https://www.techradar.com/pro/what-are-openclaw-skills-a-detailed-guide
 - Tom's Hardware: OpenClaw email deletion incident and compaction discussion. https://www.tomshardware.com/tech-industry/artificial-intelligence/openclaw-wipes-inbox-of-meta-ai-alignment-director-executive-finds-out-the-hard-way-how-spectacularly-efficient-ai-tool-is-at-maintaining-her-inbox

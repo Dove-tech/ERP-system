@@ -22,7 +22,7 @@
 
 这个设计更接近 OpenClaw 的 Compaction 思路：保留完整历史，压缩较早上下文，最近消息仍然原文进入模型。
 
-## 0. 当前代码落地
+## 0. 当前代码落地与目标改造方向
 
 当前工程已经把 summary 从“每轮覆盖最近目标”改成 OpenClaw Compaction 风格的会话压缩。
 
@@ -45,6 +45,20 @@ app.py
 5. 主路径调用 LLM summarizer，把旧 summary 和掉出窗口的消息压缩成新的 conversation_summary。
 6. 如果 LLM 调用失败或返回空，降级到规则式 extractive fallback，保证主流程不中断。
 7. 任务结束后写入 summary_compacted trace event，方便后续评测和排查。
+```
+
+注意：上面是当前代码现状。它的触发条件仍然是 `total_messages - recent_window > compacted_message_count`，也就是按消息条数判断，而不是按 token budget 判断。
+
+后续目标改造方向是：**从“按消息条数触发压缩”改为“按 prompt token 压力触发压缩”**。也就是说，系统不再因为超过固定轮数就压缩，而是先估算即将发送给模型的 prompt token 数，只有当 prompt 接近上下文窗口阈值时才触发 compaction。
+
+目标设计更接近 OpenClaw 风格的 compaction：
+
+```text
+完整历史持久化保存
+-> 每次调用模型前估算 prompt token
+-> token 压力超过阈值时压缩较早上下文
+-> 最近工作集仍然原文保留
+-> 压缩后的 summary + 最近原文共同进入模型
 ```
 
 当前压缩输入是：
@@ -265,6 +279,200 @@ HITL 确认记录
 
 它是系统记录，不是每轮模型上下文。
 
+### 4.1.1 短期记忆、Task、Trace 和 Graph State 的区别
+
+这里容易混淆，需要明确当前代码里的真实存储落点。
+
+项目里所谓“短期记忆”主要不是 LangGraph node 信息，也不是 graph state，而是 MongoDB 中的 `SessionMemory`。
+
+当前可以分成四类：
+
+```text
+SessionMemory
+保存用户和助手在当前 session 中说过什么。
+
+Task
+保存当前任务状态、HITL 挂起状态和前端展示需要的 nodes/edges。
+
+TraceRecord
+保存工具选择、参数抽取、权限校验、HITL、工具调用、异常和 LangGraph node 执行事件。
+
+LangGraph State
+只保存本次图执行时节点之间传递的临时任务状态。
+```
+
+#### SessionMemory：真正会话短期记忆
+
+`SessionMemory` 按 `user_id + session_id` 隔离，字段包括：
+
+```text
+user_id
+session_id
+task_id
+role
+content
+message_type
+metadata
+created_at
+```
+
+它主要保存：
+
+```text
+用户原始请求：role=user, message_type=user_query
+助手最终回答：role=assistant, message_type=system_output
+用户补参反馈：role=user, message_type=missing_params_feedback
+```
+
+所以 `SessionMemory` 更像真正的聊天短期记忆：
+
+```text
+用户问了什么
+系统最终回答了什么
+用户在 HITL / 补参阶段补充了什么
+```
+
+`ContextManager.build_context_state()` 中的 `recent_messages`，主要就是从这里读取。
+
+#### Task：当前任务和 HITL 挂起状态
+
+HITL 当前等待状态不主要存在 `SessionMemory`，而是存在 `Task` 中。
+
+关键字段：
+
+```text
+pending_action
+pending_payload
+curr_tool_id
+curr_tool_param
+system_output
+nodes
+edges
+graph_title
+```
+
+例如：
+
+```text
+pending_action = missing_params_clarify
+pending_action = tool_execution_confirm
+```
+
+`pending_payload` 会保存当前等待用户处理所需的结构化信息：
+
+```text
+tool_id
+tool_name
+operation_id
+known_params
+missing_params
+params
+raw_query
+permission
+```
+
+因此：
+
+```text
+SessionMemory 记录“用户和系统说了什么”。
+Task 记录“当前任务卡在哪一步、等用户做什么”。
+```
+
+#### TraceRecord：过程记忆和评测证据
+
+工具选择、参数抽取、权限校验、工具调用过程和 LangGraph 节点执行过程，主要写入 `TraceRecord.events`。
+
+典型事件包括：
+
+```text
+tool_selected
+params_extracted
+permission_check_started
+permission_check_passed
+human_feedback_intent
+tool_invocation_started
+tool_invocation_finished
+langgraph_node_completed
+langgraph_human_gate_created
+langgraph_resume_requested
+langgraph_resume_completed
+summary_compacted
+```
+
+它的主要用途是：
+
+```text
+debug
+集成测试
+指标计算
+bad case 复盘
+面试展示 trace 链路
+```
+
+默认情况下，`TraceRecord.events` 不会原样作为短期记忆注入 prompt。原因是 trace 内容通常很细、很长，而且包含大量过程信息。需要进入上下文时，应该先整理成：
+
+```text
+tool_result_summary
+result_id
+必要字段
+```
+
+而不是把完整 trace 直接塞给模型。
+
+#### LangGraph State：临时运行状态，不是记忆库
+
+LangGraph node 例如：
+
+```text
+load_task
+classify_task
+select_tool
+check_tool
+persist_decision
+```
+
+只是执行阶段。
+
+`ERPGraphState` 只保存当前图执行需要的临时状态：
+
+```text
+query
+task_id
+task_desc
+tool_id
+tool_check_result
+next_action
+error
+```
+
+当前项目还没有接 LangGraph 原生 checkpointer，所以 graph state 不承担长期保存记忆的职责。
+
+node 执行过程中产生的重要信息，会写到：
+
+```text
+Task
+TraceRecord
+SessionMemory
+```
+
+#### 一句话区分
+
+```text
+SessionMemory 是“用户和助手说过什么”。
+Task 是“当前任务卡在哪一步”。
+TraceRecord 是“系统中间到底做了什么”。
+LangGraph State 是“这一次图执行时节点之间传什么”。
+```
+
+所以当文档里说“上下文工程注入短期记忆”时，严格来说主要注入的是：
+
+```text
+SessionMemory 里的 recent_messages
++ SummaryMemory 里的 conversation_summary
+```
+
+而不是把所有 node 信息、TraceRecord 事件和工具调用细节都注入 prompt。
+
 ### 4.2 conversation_summary
 
 压缩摘要。
@@ -412,35 +620,44 @@ Recent Messages 和 Current User Query 才是当前任务判断的主要依据�
 频繁更新会增加 summary 漂移风险。
 ```
 
-推荐触发条件：
+推荐改造成基于 token budget 的触发条件：
 
 ```text
-1. 当前 session 消息数超过阈值，例如 12 轮。
-2. 当前 prompt token 预计超过阈值，例如 70% 上下文窗口。
-3. 工具 trace 太多，导致最近上下文明显膨胀。
-4. 用户开启长任务，连续多轮围绕同一业务流程交互。
+1. 构造候选 prompt。
+2. 估算 system prompt、工具描述、conversation_summary、recent_messages、RAG 结果、当前 query 的总 token。
+3. 如果预计 prompt token <= soft_budget，则不压缩。
+4. 如果预计 prompt token > soft_budget，则触发 compaction。
+5. 如果预计 prompt token > hard_budget，则必须压缩；压缩后仍超限时，继续压缩工具结果、减少检索片段或保留更小的最近工作集。
 ```
 
 推荐做法：
 
 ```text
-保留最近 N 轮原文。
-把更早的消息压缩进 conversation_summary。
+不再按固定 N 轮保留原文。
+改为按 token budget 保留最近工作集。
+较早且还没有压缩过的消息进入 conversation_summary。
+当前用户 query、最近 HITL 状态、最近工具结果摘要必须优先保留。
 ```
 
 例如：
 
 ```text
-总历史 30 轮
-最近 8 轮保留原文
-前 22 轮压缩成 summary
+模型上下文窗口：32k tokens
+预留输出：4k tokens
+系统 prompt + 工具描述：6k tokens
+conversation_summary：1.5k tokens
+可用于最近消息和检索结果的预算：约 20k tokens
+
+如果候选 prompt 预计达到 24k tokens 以上，就触发 compaction。
+系统从最近消息开始向前累计 token，保留最近工作集。
+更早的消息压缩进 conversation_summary。
 ```
 
 下一次触发时：
 
 ```text
 旧 summary + 新增的较早消息 -> 新 summary
-继续保留最近 8 轮原文
+继续按 token budget 保留最近工作集
 ```
 
 ## 8. Summary 生成 Prompt
@@ -979,4 +1196,930 @@ summary 只做上下文压缩已经足够合理。
 
 ```text
 summary 只负责让模型“看懂前文”，不负责替系统“决定事实”。
+```
+
+## 21. 业界常见的上下文压缩方式
+
+当前业界对长上下文的处理，通常不是只依赖某一种压缩方法，而是把多种策略组合起来使用。比较常见的工程形态是：
+
+```text
+最近几轮原文
++ 较早历史摘要
++ 结构化任务状态
++ 必要时从历史库、工具 trace 或 RAG 中召回原始证据
+```
+
+也就是说，线上系统一般不会把所有历史都塞给模型，也不会只相信一段 summary。更稳妥的做法是：**压缩可读上下文，保留原始证据**。
+
+### 21.1 滑动窗口 / 截断
+
+最基础的做法是只保留最近 N 轮对话，超过窗口的历史不再进入 prompt。
+
+例如：
+
+```text
+完整历史：30 轮
+进入模型：最近 8 轮
+更早历史：不进入当前 prompt
+```
+
+优点：
+
+```text
+实现简单
+成本低
+行为稳定
+不引入 summary 幻觉
+```
+
+缺点：
+
+```text
+早期关键信息可能丢失
+不适合长流程任务
+不适合多轮参数补充
+不适合用户早期说过关键约束的场景
+```
+
+适合场景：
+
+```text
+普通闲聊
+上下文依赖不强的问答
+最近几轮就足够完成任务的 Agent
+```
+
+在 ERP Agent 中，单独使用滑动窗口风险较高。比如用户早期说过“只查华东区，不要导出”，后面只说“继续处理”，如果早期约束被截断，就可能导致模型误判。
+
+### 21.2 LLM 摘要压缩
+
+当历史超过 token 阈值时，用一个模型把较早的对话压缩成 summary，然后在后续 prompt 中使用：
+
+```text
+system prompt
++ conversation_summary
++ recent_messages
++ current_user_query
+```
+
+典型输入：
+
+```text
+old_summary
++ messages_to_compact
+```
+
+典型输出：
+
+```text
+new_conversation_summary
+```
+
+优点：
+
+```text
+可以保留较早历史的大意
+比全量历史更省 token
+比纯截断更不容易丢失长期任务背景
+适合多轮会话和长流程 Agent
+```
+
+缺点：
+
+```text
+summary 可能遗漏细节
+summary 可能写错细节
+summary 可能把不确定内容写成确定事实
+summary 不适合直接作为工具参数事实库
+```
+
+因此工业项目里通常会把完整历史仍然保存在数据库中，summary 只作为模型理解上下文的背景材料，而不是强事实来源。
+
+当前项目采用的就是这一类思路：较早历史通过 LLM summarizer 压缩成 `conversation_summary`，最近消息仍然原文进入模型。
+
+### 21.3 结构化状态压缩
+
+在 Agent 系统里，很多信息不适合只用自然语言 summary 表达，而应该沉淀成结构化状态。
+
+例如：
+
+```json
+{
+  "current_task": "查询华东区上个月大客户对账单",
+  "confirmed_params": {
+    "region": "华东区",
+    "date_range": "2026-05-01~2026-05-31",
+    "customer_type": "大客户"
+  },
+  "pending_action": "等待用户确认是否导出",
+  "last_tool_result": "查到 2 条差异"
+}
+```
+
+这类状态更适合做：
+
+```text
+流程恢复
+HITL 等待与恢复
+权限失败后的分支处理
+工具异常后的重试或降级
+任务当前阶段判断
+```
+
+但它也会带来明显成本：
+
+```text
+需要设计字段
+需要维护状态更新逻辑
+需要处理状态冲突
+需要测试状态是否准确
+需要防止错误状态污染后续工具调用
+```
+
+所以当前项目没有把 summary 扩展成复杂的 `summary_state`、`confirmed_facts`、`entities`、`relations`。当前版本只保留轻量的会话压缩，把流程状态交给任务状态、pending_action、HITL 和 trace 机制。
+
+### 21.4 检索式记忆 / 历史召回
+
+另一类常见做法是完整保存历史，但当前轮不直接塞入全部历史。系统根据当前 query，从历史消息、工具 trace、工具结果、文档库中召回相关片段。
+
+例如用户问：
+
+```text
+刚才那两个差异分别是什么？
+```
+
+系统可以从历史工具结果中召回：
+
+```text
+最近一次对账单查询返回 result_id=R123
+R123 中存在 2 条差异：
+1. PO-001 入库数量与发票数量不一致
+2. PO-008 税率不一致
+```
+
+然后把召回结果放入 prompt。
+
+这种方式适合：
+
+```text
+长对话
+多主题会话
+历史工具结果查询
+跨 session 记忆
+RAG 问答
+```
+
+缺点是：
+
+```text
+召回可能漏
+召回可能引入无关内容
+需要评测召回率、准确率和下游任务影响
+```
+
+更稳的组合方式是：
+
+```text
+summary 提供全局背景
+retrieval 提供局部证据
+recent_messages 提供当前语境
+current_query 决定本轮最高优先级意图
+```
+
+当前项目暂时没有把 session 历史做成跨 session 长期记忆召回，但工具 trace 和完整 session history 应该持久化保存，便于后续扩展。
+
+### 21.5 工具结果压缩
+
+Agent 项目里最容易撑爆上下文的，往往不是用户消息，而是工具返回。
+
+例如库存接口一次返回 500 条明细，如果原样塞给模型，会导致：
+
+```text
+token 成本过高
+模型注意力被大量表格数据干扰
+后续 prompt 不稳定
+接口结果泄露风险增加
+```
+
+常见做法是：
+
+```text
+完整工具结果保存到数据库或对象存储
+prompt 中只放摘要
+摘要中附带 result_id
+用户追问明细时再按 result_id 查询原始结果
+```
+
+例如：
+
+```text
+工具返回原始结果已存储 result_id=R123。
+摘要：共查询到 500 条库存记录，其中 12 条低于安全库存，3 条缺货。
+```
+
+如果用户继续问：
+
+```text
+那 3 条缺货的是哪些？
+```
+
+系统再根据 `result_id=R123` 查询原始工具结果，而不是要求模型从一大段历史表格里回忆。
+
+这个策略对 ERP Agent 很重要，因为 ERP 接口经常返回库存明细、订单明细、对账差异、供应商列表等结构化数据。
+
+### 21.6 Prompt Compression / Token 级压缩
+
+还有一类更算法化的方案，会对 prompt 或检索结果做 token 级、句子级压缩，保留信息量更高的内容，删除冗余 token。
+
+典型思路是：
+
+```text
+输入长 prompt 或长文档片段
+模型或小模型判断哪些 token、句子、段落信息量低
+删除低价值内容
+输出更短的 prompt
+```
+
+这种方式适合：
+
+```text
+RAG 检索片段压缩
+长文档问答
+降低 token 成本
+多文档输入前的预处理
+```
+
+但在 ERP 工具调用场景里要谨慎使用。因为金额、订单号、供应商名称、区域、日期、审批状态这些字段看起来可能只是短 token，但它们对业务动作非常关键。一旦被压缩算法误删，可能影响工具参数和权限判断。
+
+所以当前项目不建议把 token 级压缩用于高风险工具参数、审批内容、金额、订单号等强事实字段。
+
+### 21.7 分层记忆 / Virtual Context
+
+一些更完整的 Agent 系统会把上下文看成多级存储：
+
+```text
+热上下文：当前 prompt 中的 recent_messages、current_query
+温上下文：conversation_summary、任务状态
+冷上下文：数据库、向量库、文件、历史 trace、完整工具结果
+```
+
+模型当前只看到热上下文和部分温上下文。需要更多信息时，系统再从冷存储中召回。
+
+这种思想可以理解为：
+
+```text
+不是让模型一次性看到全部历史
+而是让系统维护完整历史
+模型只拿到当前任务需要的工作集
+```
+
+这也是当前项目后续可以演进的方向。
+
+### 21.8 对当前 ERP Agent 的推荐方案
+
+结合当前项目的复杂度、面试表达成本和工程可验证性，推荐采用以下组合：
+
+```text
+1. 数据库保存完整 session 原文、工具调用 trace、HITL 记录。
+2. prompt 中只放 token budget 内的最近工作集原文。
+3. 超过 prompt token 阈值后，用 LLM 对较早历史做 conversation_summary。
+4. 工具结果不全量进入上下文，只进入摘要 + result_id。
+5. 用户追问工具结果细节时，再根据 result_id 查询原始结果。
+6. summary 不作为强执行证据，工具调用参数优先来自当前 query、recent_messages、页面上下文和明确工具结果。
+7. 高风险动作仍然必须经过权限校验、参数校验和 HITL。
+```
+
+最终 prompt 的推荐结构是：
+
+```text
+System Prompt
++ Conversation Summary
++ Recent Messages
++ Retrieved Tool Result / Trace Evidence（如有）
++ Current User Query
+```
+
+其中：
+
+```text
+Conversation Summary 负责提供背景。
+Recent Messages 负责提供最近语境。
+Retrieved Evidence 负责提供可追溯证据。
+Current User Query 负责表达本轮最高优先级意图。
+```
+
+### 21.9 面试表达口径
+
+可以这样讲：
+
+```text
+我们没有把长对话简单地全部塞进 prompt，而是采用“完整历史持久化 + 最近消息原文 + 较早历史摘要 + 必要时召回原始证据”的方式。
+
+summary 只解决上下文压缩问题，不直接作为工具参数事实库。这样做的原因是，LLM 生成的摘要可能不完整或出现幻觉，如果让 summary 直接参与强参数补全，会放大工具误调用风险。
+
+对 ERP Agent 来说，真正影响业务安全的是工具选择、参数校验、权限校验、HITL 和 trace 可审计。所以我们把 summary 定位为背景理解能力，把强执行依据保留在当前 query、recent messages、工具 trace 和数据库原始记录里。
+```
+
+一句话总结：
+
+```text
+业界常见做法不是“让模型记住一切”，而是“系统保存一切，模型只读取当前任务需要的压缩工作集”。
+```
+
+## 22. 基于 Token Budget 的压缩改造方案
+
+当前代码按消息条数触发压缩，这种方式简单，但不够贴近真实长上下文压力。
+
+原因是：
+
+```text
+一条消息可能只有 10 个字，也可能是一大段工具结果。
+6 条普通问答可能只有几百 tokens。
+1 条工具 observation 可能有上万 tokens。
+```
+
+所以“按消息条数压缩”并不能真实反映 prompt 是否接近模型上下文窗口。更合理的做法是参考 OpenClaw 风格的 compaction：**根据 prompt token 压力触发压缩，而不是根据轮数触发压缩**。
+
+### 22.1 核心原则
+
+基于 token 的 compaction 应遵守以下原则：
+
+```text
+1. 完整历史永远持久化保存，不因为压缩而删除原始消息。
+2. 压缩触发依据是预计 prompt token，而不是消息数、轮数。
+3. 当前用户 query 永远原文保留。
+4. 最近工作集按 token budget 保留原文，而不是按固定 N 轮保留。
+5. 较早历史压缩进 conversation_summary。
+6. 工具大结果优先做 observation compression，只把摘要和 result_id 放入 prompt。
+7. summary 仍然只作为上下文背景，不作为工具参数事实库。
+8. 压缩失败不能阻断主流程，必须有 deterministic fallback。
+```
+
+这里的关键点是：**轮数只是一种粗糙代理，token 才是真正约束模型调用的资源**。
+
+### 22.2 推荐参数
+
+可以在配置中增加以下参数：
+
+```text
+model_context_window_tokens
+模型上下文窗口大小。例如 32768、65536、128000。
+
+reserved_output_tokens
+预留给模型输出的 token，例如 2048 或 4096。
+
+soft_compaction_ratio
+软触发阈值，例如 0.75。
+当预计 prompt tokens 超过可用输入窗口的 75% 时，触发压缩。
+
+hard_compaction_ratio
+硬触发阈值，例如 0.90。
+当预计 prompt tokens 超过可用输入窗口的 90% 时，必须压缩；压缩后仍超限则继续裁剪检索结果和工具 observation。
+
+summary_max_tokens
+summary 最大 token 数，例如 1000 到 2000。
+
+recent_working_set_min_tokens
+最近工作集至少保留的 token，例如 2000。
+用于保证最近对话、HITL 状态和当前任务上下文不会被过度压缩。
+
+recent_working_set_max_tokens
+最近工作集最多保留的 token，例如 6000 到 12000。
+具体取决于模型窗口和工具描述长度。
+
+tool_observation_max_tokens
+单个工具结果进入 prompt 的最大 token，例如 800 到 1500。
+超过时只保留摘要、异常项、TopK 和 result_id。
+```
+
+输入预算可以这样计算：
+
+```text
+available_input_tokens = model_context_window_tokens - reserved_output_tokens
+soft_budget = available_input_tokens * soft_compaction_ratio
+hard_budget = available_input_tokens * hard_compaction_ratio
+```
+
+例如：
+
+```text
+model_context_window_tokens = 32768
+reserved_output_tokens = 4096
+available_input_tokens = 28672
+soft_budget = 21504
+hard_budget = 25804
+```
+
+当候选 prompt 预计超过 21504 tokens 时，开始压缩；超过 25804 tokens 时，必须压缩并进一步裁剪。
+
+### 22.3 Token 估算方式
+
+工程上需要增加一个 `TokenEstimator`。
+
+优先级建议：
+
+```text
+1. 如果模型有明确 tokenizer，使用模型对应 tokenizer。
+2. 如果是 OpenAI-compatible 模型，可以使用 tiktoken 或兼容 tokenizer。
+3. 如果是本地私有化模型，可以使用 transformers tokenizer。
+4. 如果拿不到 tokenizer，使用保守估算：
+   中文按 1 到 1.5 字符约等于 1 token 估算；
+   英文按 3 到 4 字符约等于 1 token 估算；
+   JSON、表格、工具结果额外乘以 1.2 到 1.5 的膨胀系数。
+```
+
+不要为了追求绝对精确而让实现变重。token 估算的目标是判断“是否接近窗口上限”，不是精确计费。
+
+推荐提供统一接口：
+
+```python
+class TokenEstimator:
+    def count_text(self, text: str, model_name: str) -> int:
+        ...
+
+    def count_message(self, message: dict, model_name: str) -> int:
+        ...
+
+    def count_prompt_parts(self, parts: dict, model_name: str) -> dict:
+        ...
+```
+
+输出不仅要有总 token，还要有分项：
+
+```json
+{
+  "system_prompt": 3200,
+  "tool_descriptions": 4800,
+  "conversation_summary": 1100,
+  "recent_messages": 8200,
+  "rag_context": 3600,
+  "current_query": 120,
+  "total": 21020
+}
+```
+
+这样后续排查时能知道 token 压力来自哪里：是工具描述太多、RAG 片段太长，还是工具结果太大。
+
+### 22.4 触发时机
+
+建议把 compaction 的主要触发点放在 **调用主模型之前**，而不是只放在任务结束之后。
+
+原因是：
+
+```text
+真正会因为上下文过长失败的是本次模型调用。
+如果只在任务结束后压缩，可能当前这次调用已经超限。
+```
+
+推荐流程：
+
+```text
+用户输入写入 SessionMemory
+-> 构造候选 prompt parts
+-> 估算 prompt token
+-> 判断是否超过 soft_budget
+-> 如超过，执行 compaction
+-> 重新构造 prompt parts
+-> 再次估算 token
+-> token 合规后调用主模型
+-> 模型输出和工具 trace 持久化
+```
+
+任务结束后可以做一次轻量维护：
+
+```text
+如果本轮结束后，下一轮候选上下文预计会超过 soft_budget，可以后台预压缩。
+```
+
+但主流程必须保证：**每次真正调用模型前，prompt 已经通过 token budget 检查**。
+
+### 22.5 具体流程
+
+完整流程如下：
+
+```text
+1. 保存当前用户消息
+   SessionMemory 写入 user_query。
+
+2. 读取完整上下文索引
+   读取 SummaryMemory 中已有 conversation_summary。
+   读取从 last_compacted_message_id 之后的未压缩消息。
+   读取必要的最近工具 trace、HITL 状态、当前 query。
+
+3. 构造候选 prompt
+   System Prompt
+   + Tool Descriptions / Candidate Tools
+   + Conversation Summary
+   + Uncompressed Recent Messages
+   + Retrieved Evidence
+   + Current User Query
+
+4. 估算候选 prompt token
+   使用 TokenEstimator 计算各部分 token 和总 token。
+
+5. 判断是否触发压缩
+   如果 total_tokens <= soft_budget：不压缩。
+   如果 total_tokens > soft_budget：触发 compaction。
+   如果 total_tokens > hard_budget：进入强制压缩。
+
+6. 选择最近工作集
+   从最新消息开始向前累计 token。
+   当前 query、最近 HITL、最近工具结果摘要优先保留。
+   累计到 recent_working_set_max_tokens 附近停止。
+   保留内容必须以完整 message 为边界，不要把一条自然语言消息切半。
+
+7. 确定待压缩消息
+   待压缩消息 = last_compacted_message_id 之后、且不在最近工作集中的较早消息。
+
+8. 生成新 summary
+   old_summary + messages_to_compact -> new_summary。
+   主路径使用 LLM summarizer。
+   LLM 失败时使用 deterministic fallback。
+
+9. 更新 SummaryMemory
+   写入 new_summary。
+   更新 last_compacted_message_id。
+   记录 summary_token_count、prompt_tokens_before、prompt_tokens_after、compaction_reason。
+
+10. 重新构造 prompt
+    使用 new_summary + 最近工作集 + 当前 query。
+
+11. 再次估算 token
+    如果仍超过 hard_budget：
+    - 压缩工具 observation；
+    - 减少 RAG topK；
+    - 降低 summary_max_tokens；
+    - 缩小 recent_working_set_max_tokens；
+    - 必要时要求用户缩小范围或重新发起任务。
+
+12. 调用主模型
+    token 合规后进入工具选择、参数抽取、HITL 或直接回答流程。
+```
+
+### 22.6 最近工作集如何选择
+
+最近工作集不再按“最近 6 条消息”选择，而是按 token budget 选择。
+
+推荐策略：
+
+```text
+从最新消息向前扫描
+-> 当前 query 必保留
+-> 最近 assistant 输出必保留
+-> 当前 pending_action / HITL 相关消息必保留
+-> 最近一次工具调用摘要和 result_id 必保留
+-> 继续向前保留消息，直到达到 recent_working_set_max_tokens
+```
+
+示例：
+
+```text
+recent_working_set_max_tokens = 6000
+
+从最新消息向前累计：
+当前 query：80 tokens
+上一条 assistant：600 tokens
+用户确认反馈：50 tokens
+工具结果摘要：900 tokens
+前一轮用户请求：120 tokens
+...
+累计到 5800 tokens 时停止
+更早消息进入待压缩区
+```
+
+注意：
+
+```text
+保留单位仍然是 message，不是任意切 token。
+如果某条工具结果本身超过 observation budget，需要先做工具结果压缩。
+自然语言消息不要从中间截断。
+```
+
+### 22.7 工具结果优先压缩
+
+在 Agent 系统里，工具 observation 经常比聊天历史更占 token。
+
+所以 token 超限时，不应该只压缩对话，还应该优先处理大工具结果：
+
+```text
+完整工具结果保存到数据库。
+prompt 中只放：
+- result_id
+- 总数
+- 关键字段
+- 异常项
+- TopK 示例
+- 下一步判断需要的最小信息
+```
+
+例如：
+
+```text
+原始工具结果：
+返回 500 条库存明细。
+
+进入 prompt：
+result_id=INV-20260616-001。
+共 500 条库存记录，12 条低于安全库存，3 条缺货。
+缺货 SKU：A15、E7、M20。
+完整结果已保存，用户追问明细时按 result_id 查询。
+```
+
+这样比把 500 条明细直接塞进 prompt 更稳定。
+
+### 22.8 SummaryMemory 字段建议
+
+当前 `SummaryMemory` 主要字段是：
+
+```text
+summary
+compacted_message_count
+recent_window
+max_summary_chars
+updated_at
+```
+
+基于 token 的设计建议改为：
+
+```json
+{
+  "user_id": "u001",
+  "session_id": "s001",
+  "summary": "用户前面主要在处理华东区供应商对账问题...",
+  "last_compacted_message_id": "msg_018",
+  "last_compacted_at": "2026-06-16T10:30:00+08:00",
+  "summary_token_count": 980,
+  "summary_max_tokens": 1500,
+  "model_context_window_tokens": 32768,
+  "reserved_output_tokens": 4096,
+  "soft_budget": 21504,
+  "hard_budget": 25804,
+  "recent_working_set_token_count": 5800,
+  "prompt_tokens_before": 26300,
+  "prompt_tokens_after": 14200,
+  "compaction_reason": "prompt_tokens_exceeded_soft_budget",
+  "compaction_version": "token_budget_v1"
+}
+```
+
+为了兼容旧代码，可以暂时保留 `compacted_message_count`，但新逻辑不应该再用它作为触发条件。它最多作为迁移期的辅助字段。
+
+### 22.9 Trace 记录建议
+
+每次 compaction 都应该写入 trace event，方便评测和线上排查。
+
+建议事件：
+
+```json
+{
+  "event_type": "context_compacted",
+  "strategy": "token_budget",
+  "trigger": "soft_budget_exceeded",
+  "model_context_window_tokens": 32768,
+  "reserved_output_tokens": 4096,
+  "soft_budget": 21504,
+  "hard_budget": 25804,
+  "prompt_tokens_before": 26300,
+  "prompt_tokens_after": 14200,
+  "summary_tokens_before": 1200,
+  "summary_tokens_after": 980,
+  "recent_working_set_tokens": 5800,
+  "compacted_message_count_delta": 12,
+  "last_compacted_message_id": "msg_018",
+  "fallback_used": false
+}
+```
+
+如果出现问题，可以快速判断：
+
+```text
+是不是工具结果太大？
+是不是 summary 太长？
+是不是 recent working set 预算过大？
+是不是 RAG topK 太高？
+是不是压缩后仍然接近 hard budget？
+```
+
+### 22.10 伪代码
+
+核心伪代码如下：
+
+```python
+def build_context_with_token_budget(user_id, session_id, current_query, model_name):
+    summary = memory_manager.get_summary(user_id, session_id)
+    messages = memory_manager.get_uncompacted_messages(
+        user_id=user_id,
+        session_id=session_id,
+        after_message_id=summary.last_compacted_message_id,
+    )
+
+    prompt_parts = build_prompt_parts(
+        summary=summary.text,
+        messages=messages,
+        current_query=current_query,
+    )
+    token_report = token_estimator.count_prompt_parts(prompt_parts, model_name)
+
+    if token_report["total"] <= soft_budget:
+        return prompt_parts, token_report
+
+    recent_working_set = select_recent_working_set_by_tokens(
+        messages=messages,
+        current_query=current_query,
+        max_tokens=recent_working_set_max_tokens,
+        min_tokens=recent_working_set_min_tokens,
+    )
+
+    messages_to_compact = messages_before(recent_working_set)
+
+    new_summary = summarize(
+        old_summary=summary.text,
+        messages=messages_to_compact,
+        max_tokens=summary_max_tokens,
+    )
+
+    memory_manager.update_summary(
+        user_id=user_id,
+        session_id=session_id,
+        summary=new_summary,
+        last_compacted_message_id=messages_to_compact[-1].id,
+        token_metadata=token_report,
+    )
+
+    rebuilt_parts = build_prompt_parts(
+        summary=new_summary,
+        messages=recent_working_set,
+        current_query=current_query,
+    )
+    rebuilt_token_report = token_estimator.count_prompt_parts(rebuilt_parts, model_name)
+
+    if rebuilt_token_report["total"] > hard_budget:
+        rebuilt_parts = shrink_context_until_fit(rebuilt_parts, hard_budget)
+
+    return rebuilt_parts, rebuilt_token_report
+```
+
+这段逻辑的重点是：
+
+```text
+先估算 token，再决定是否压缩。
+先保留最近工作集，再压缩更早消息。
+压缩后必须重新估算。
+仍然超限时继续缩减工具结果、RAG 片段或最近工作集。
+```
+
+### 22.11 具体例子
+
+假设模型窗口是 32k tokens：
+
+```text
+model_context_window_tokens = 32768
+reserved_output_tokens = 4096
+available_input_tokens = 28672
+soft_budget = 21504
+hard_budget = 25804
+summary_max_tokens = 1500
+recent_working_set_max_tokens = 6000
+```
+
+某次用户请求前，系统构造候选 prompt：
+
+```text
+system prompt：2800 tokens
+工具描述：5200 tokens
+conversation_summary：1300 tokens
+历史消息和工具结果：19000 tokens
+当前 query：100 tokens
+总计：28400 tokens
+```
+
+此时：
+
+```text
+28400 > hard_budget 25804
+必须压缩。
+```
+
+系统从最新消息向前保留最近工作集：
+
+```text
+当前 query：100 tokens
+最近 HITL 确认状态：300 tokens
+最近工具结果摘要：900 tokens
+最近 5 条自然语言消息：2300 tokens
+上一轮 assistant 输出：1200 tokens
+合计：4800 tokens
+```
+
+较早的历史消息进入 compaction：
+
+```text
+old_summary + 较早历史消息 -> new_summary
+```
+
+压缩后重新估算：
+
+```text
+system prompt：2800 tokens
+工具描述：5200 tokens
+new conversation_summary：950 tokens
+recent working set：4800 tokens
+当前 query：100 tokens
+总计：13850 tokens
+```
+
+此时低于 soft_budget，可以调用主模型。
+
+### 22.12 和 OpenClaw Compaction 的对应关系
+
+参考 OpenClaw 风格时，重点不是照搬某个固定参数，而是借鉴以下机制：
+
+```text
+1. 不把完整历史无限塞进上下文。
+2. 接近上下文窗口阈值时才触发 compaction。
+3. 较早上下文被压缩成 summary。
+4. 最近消息仍然原文保留。
+5. 完整历史仍然在系统侧保存。
+6. compaction 后继续执行当前任务，而不是让用户重新开始。
+```
+
+映射到当前 ERP Agent：
+
+```text
+OpenClaw 的压缩上下文
+-> 当前项目的 conversation_summary
+
+OpenClaw 的最近未压缩上下文
+-> 当前项目的 recent_working_set
+
+OpenClaw 的长期完整记录
+-> 当前项目的 SessionMemory、TraceRecord、工具结果存储
+
+OpenClaw 的接近窗口时触发
+-> 当前项目的 soft_budget / hard_budget token 触发
+```
+
+### 22.13 评测方式
+
+改成 token 触发后，需要补充以下评测：
+
+```text
+1. token 估算准确性
+   对比估算 token 和真实模型调用 token，误差控制在可接受范围。
+
+2. 压缩触发正确性
+   未超过 soft_budget 时不压缩。
+   超过 soft_budget 时触发压缩。
+   超过 hard_budget 时强制压缩并保证最终 prompt 合规。
+
+3. 最近工作集保留正确性
+   当前 query 必保留。
+   最近 HITL 状态必保留。
+   最近工具结果摘要和 result_id 必保留。
+   不应该为了压缩把当前任务关键上下文丢掉。
+
+4. summary 忠实性
+   summary 不编造用户确认。
+   summary 不把临时参数写成长期偏好。
+   summary 保留任务背景、已完成步骤、未完成事项和明确约束。
+
+5. 下游任务影响
+   压缩前后工具选择准确率不能下降。
+   参数正确率不能明显下降。
+   HITL 触发不能被 summary 错误绕过。
+   任务完成率不能下降。
+
+6. 成本与稳定性
+   平均 prompt tokens 下降。
+   超上下文失败率下降。
+   summarizer 失败时 fallback 可用。
+```
+
+建议增加集成测试 case：
+
+```text
+短对话不触发压缩。
+长对话超过 soft_budget 触发压缩。
+工具结果过大时优先压缩 observation。
+压缩后仍超 hard_budget 时减少 RAG topK。
+HITL 等待中的任务压缩后仍能继续确认执行。
+summary 错误声称用户已确认时，系统仍然要求 HITL。
+```
+
+### 22.14 面试表达口径
+
+可以这样讲：
+
+```text
+我们一开始没有简单按轮数做上下文压缩，因为轮数不能真实代表上下文压力。一条工具结果可能比十轮普通对话还长。所以我们参考 OpenClaw 的 compaction 思路，把触发条件改成 token budget：每次调用模型前都会估算 system prompt、工具描述、summary、recent working set、RAG 片段和当前 query 的 token。
+
+如果没有超过 soft budget，就不压缩；如果超过阈值，就把较早历史合并进 conversation_summary，同时按 token 预算保留最近工作集原文。完整历史仍然保存在数据库里，summary 只用于背景理解，不作为工具参数事实库。
+
+这样做的好处是压缩时机更准确，既避免短对话无意义总结，也能防止工具结果或长历史把上下文撑爆。后续我们通过 token 压缩率、任务完成率、工具调用准确率、HITL 保留正确性和 summary 忠实性来做回归评测。
+```
+
+一句话总结：
+
+```text
+从“最近 N 轮”改成“token budget 下的最近工作集”，才是真正面向长上下文 Agent 的 compaction。
 ```

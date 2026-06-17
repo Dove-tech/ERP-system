@@ -17,6 +17,7 @@
 相关文档：
 
 - `docs/langgraph_refactor_interview_guide.md`：LangGraph 重构与面试说明。
+- `docs/langgraph_borrowed_ideas_and_techniques.md`：项目借鉴的 LangGraph 思想与技术。
 - `docs/tool_execution_multi_agent_plan.md`：无 RAG 版本的工具执行型 Multi-Agent 架构与评测方案。
 - `docs/interview_packaging_v1.md`、`docs/interview_packaging_v2.md`：早期项目包装材料。
 - `docs/tool_permission_context_design.md`：权限、上下文和工具调用设计。
