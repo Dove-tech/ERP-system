@@ -1,0 +1,15 @@
+{
+  "model": "glm-5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "某商品先涨价 20%，再打八折，最后在折后价格基础上再降价 10%。\n请计算最终价格相对于原价的变化百分比，并说明完整计算过程。"
+    }
+  ],
+  "stream": false,
+  "thinking": {
+    "type": "disabled"
+  },
+  "max_tokens": 4096,
+  "do_sample": false
+}
